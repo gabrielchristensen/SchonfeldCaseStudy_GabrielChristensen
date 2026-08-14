@@ -32,3 +32,6 @@ data/processed/*
 
 # Env secrets
 .env
+
+# Claude Code personal/local overrides (not shared project config)
+.claude/settings.local.json

@@ -12,12 +12,17 @@ source .venv/bin/activate
 ## Structure
 
 ```
+docs/
+  prompt.pdf   # case study prompt
+  memo.md      # 3-5 page deliverable memo
 data/
   raw/         # untouched input data (gitignored — never commit)
   processed/   # derived/cleaned data (gitignored — never commit)
+  reference/   # small committed reference tables (CUSIP overrides, S&P 500 membership, etc.)
 notebooks/     # exploratory analysis
-src/           # reusable analysis code
+src/           # reusable analysis code (ingest, pit, mapping, universe, factor, backtest, report)
 tests/         # tests for src/
+results/       # generated backtest report (self-contained HTML deliverable)
 ```
 
 ## Commands
