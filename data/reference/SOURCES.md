@@ -137,17 +137,51 @@ only the build scripts noted below do, and only when regenerating a file.
 ## `passive_manager_ciks.csv`
 
 - **Source**: manual curation, cross-verified against real
-  `FILINGMANAGER_NAME` values in `data/processed/13f_panel_sample.parquet`
-  (2026 Q1-Q2 filings) rather than trusted from external CIK lookups alone.
-  Initial external candidate CIKs for Vanguard, BlackRock, and Northern
-  Trust (sourced from SEC EDGAR company search) turned out to be stale --
-  those entities now file 13F under different CIKs than commonly-cited
-  older ones, discovered only by checking which CIKs actually appear with
-  material AUM in real, recent ingested data. See the `NOTES` column of
-  the file itself for the verification detail behind each row.
-- **Retrieved/verified**: 2026-08-15.
+  `FILINGMANAGER_NAME` values in ingested 13F data rather than trusted from
+  external CIK lookups alone.
+- **BIAS FOUND AND FIXED (2026-08-15): the first version of this file was
+  itself a survivorship-bias bug.** It was built by checking only the most
+  recent (2026) quarter's data, which caught that external SEC EDGAR
+  lookups for Vanguard/BlackRock/Northern Trust were stale -- but silently
+  inherited the same mistake at one level down: the *replacement* CIKs it
+  found (e.g. Vanguard's `0002100119`, BlackRock's `0002012383`) turned out
+  to be **newly issued CIKs that only appear in 2026 data**. Checking
+  `FILINGMANAGER_NAME`/`VALUE` at four points spread across the backtest
+  window (2015q1, 2019q1, 2023q4, 2026) confirmed both Vanguard and
+  BlackRock filed under **entirely different CIKs** for most of 2013-2025:
+  Vanguard under `0000102909` ("VANGUARD GROUP INC", the exact CIK an
+  earlier external lookup had found and this file's author discarded as
+  "stale"), BlackRock dominantly under `0001364742` ("BlackRock Inc.")
+  from ~2019, plus several subsidiary CIKs (`0000913414`, `0001006249`)
+  material in the earlier (2014-2016) era. **Practical effect of the bug**:
+  the passive-manager exclusion was silently a no-op for roughly 13 of the
+  ~13.5-year backtest window -- only the most recent quarter or two
+  actually excluded these managers' holdings from breadth counts, directly
+  undermining the point of excluding them (Vanguard/BlackRock's mechanical
+  index-fund holdings would have counted toward "positioning breadth" for
+  nearly the entire backtest). State Street, Geode, Northern Trust, and
+  Schwab were checked at the same four points and found to have used a
+  single stable CIK throughout -- no fix needed for those.
+- **Fix**: the file now lists CIKs for *both* eras where a transition was
+  found (old + new), verified end-to-end by recomputing AAPL's breadth
+  with/without exclusion at both an early-window date (period 2014-12-31,
+  as-of 2015-05-15: 8 passive holders now correctly excluded, all
+  old-era CIKs) and a recent date (period 2026-03-31, as-of 2026-05-29: 9
+  passive holders excluded, all new-era CIKs). Before the fix, the
+  early-window check would have found zero passive holders to exclude.
+- **Retrieved/verified**: 2026-08-15 (four-point historical check); see the
+  `NOTES` column of the file itself for the per-CIK verification detail.
 - **Deliberately not exhaustive**: this is a small, curated list of the
   largest, most clearly mechanical index-tracking filers, not an attempt
   to classify every passive dollar in the panel (a "trying to do
   everything" failure mode the case-study prompt explicitly warns
-  against). Disclosed as a scope cut in the memo.
+  against), and BlackRock's ~25 smaller international/regional subsidiary
+  filers (Japan, Taiwan, Korea, Netherlands, Luxembourg, etc., all visible
+  in the same historical scans) were not individually verified for
+  materiality and are not included. Disclosed as a scope cut in the memo.
+- **General lesson applied elsewhere in this file**: any CIK/entity
+  identification done against only a single (especially only the most
+  recent) quarter of data should be treated as unverified for the rest of
+  the backtest window until checked against multiple, well-spread
+  historical points -- entities that file 13F under a stable identity in
+  one era are not guaranteed to have used that identity throughout.

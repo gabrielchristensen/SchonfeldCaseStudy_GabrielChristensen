@@ -4,7 +4,7 @@
 
 Per the pipeline design (`ingest → pit → mapping → universe → factor → backtest → report`), Phase 2 covers **`src/mapping.py`** (CUSIP → ticker crosswalk) and **`src/universe.py`** (point-in-time S&P 500 membership + passive-manager exclusion), plus a small, approved reopening of Phase 1's `src/ingest.py` to add COVERPAGE parsing. Phase 1's `breadth()` primitive (distinct-filer count per CUSIP) was already point-in-time correct but unusable for a factor: there was no way to go from a CUSIP to a tradeable equity, and no definition of "the universe" on either axis the case study asks for (which equities, which institutional holders).
 
-Status: **complete**. 68/68 tests pass (up from 39 at the start of this phase), and the composed end-to-end contract (`universe.sp500_universe_breadth()`) has been validated against real ingested 13F data, not just synthetic fixtures. Four real bugs were found and fixed while building this against live external services — this report documents each one, since discovering and fixing them under real conditions is a direct demonstration of the "data engineering care" the case study evaluates on.
+Status: **complete**. 69/69 tests pass (up from 39 at the start of this phase), and the composed end-to-end contract (`universe.sp500_universe_breadth()`) has been validated against real ingested 13F data, not just synthetic fixtures. Five real bugs were found and fixed while building this against live external services and real historical data — four during initial implementation, and a fifth (a survivorship-bias bug in the passive-manager exclusion, [see the dedicated audit section](#post-report-bias-audit-a-survivorship-bias-bug-in-the-passive-manager-exclusion)) during a follow-up bias review the case study explicitly asks for. This report documents each one, since discovering and fixing them under real conditions is a direct demonstration of the "data engineering care" the case study evaluates on.
 
 ---
 
@@ -88,21 +88,28 @@ Comprehensively patching this would mean reconstructing a full historical CUSIP/
 `data/reference/sp500_history.csv` is built once, offline, via `python -m src.universe --build-sp500-history` from the free [fja05680/sp500](https://github.com/fja05680/sp500) GitHub dataset (MIT licensed). The raw upstream file is 5.5MB with near-daily redundant snapshot rows; `build_sp500_history` trims to dates on/after 2012-01-01 (a buffer before SEC's May 2013 structured-data start) and **drops consecutive rows with identical membership** — lossless for as-of-date lookups, since only the change dates carry information, shrinking the committed file to 287 rows / 585KB.
 
 ### Passive-manager exclusion
-`passive_manager_ciks(path)` reads a small curated CSV and re-zfills CIKs to 10 digits defensively (so a hand-edited file can't silently break exclusion via a padding mismatch — the exact bug class fixed in `ingest.py`). The 9 curated entries were **not** sourced from external CIK lookups alone: an initial pass using SEC EDGAR's company search returned CIKs for Vanguard, BlackRock, and Northern Trust that turned out to be stale — those managers file 13F under different, newer CIKs today. This was only caught by cross-checking candidates against real `FILINGMANAGER_NAME` values in the ingested panel (only possible because of the COVERPAGE addendum above) and ranking by aggregate reported `VALUE`:
+`passive_manager_ciks(path)` reads a small curated CSV and re-zfills CIKs to 10 digits defensively (so a hand-edited file can't silently break exclusion via a padding mismatch — the exact bug class fixed in `ingest.py`).
 
-| CIK | Manager | Verified aggregate VALUE (2026 Q1–Q2) |
+**This list went through two rounds of correction, the second of which was a real survivorship-bias bug in the exclusion logic itself** — documented in full in the [Bias audit](#post-report-bias-audit-a-survivorship-bias-bug-in-the-passive-manager-exclusion) section below. The final, corrected 14-entry list:
+
+| CIK | Manager | Era active (verified) |
 |---|---|---|
-| 0002100119 | VANGUARD CAPITAL MANAGEMENT LLC | ~$8.0T |
-| 0002012383 | BlackRock, Inc. | ~$5.7T |
-| 0000093751 | STATE STREET CORP | ~$2.9T |
-| 0002100121 | VANGUARD PORTFOLIO MANAGEMENT LLC | ~$1.9T |
-| 0001214717 | GEODE CAPITAL MANAGEMENT, LLC | ~$1.6T |
-| 0000073124 | NORTHERN TRUST CORP | ~$757B |
-| 0000884546 | CHARLES SCHWAB INVESTMENT MANAGEMENT INC | ~$654B |
-| 0000933478 | VANGUARD FIDUCIARY TRUST CO | ~$396B |
-| 0001811242 | Vanguard Global Advisers LLC | ~$187B |
+| 0000102909 | VANGUARD GROUP INC | 2013–2025 (dominant) |
+| 0002100119 | VANGUARD CAPITAL MANAGEMENT LLC | 2026+ (dominant) |
+| 0002100121 | VANGUARD PORTFOLIO MANAGEMENT LLC | 2026+ |
+| 0000933478 | VANGUARD FIDUCIARY TRUST CO | 2014–2026, intermittent |
+| 0001811242 | Vanguard Global Advisers LLC | 2020+ |
+| 0001364742 | BlackRock Inc. | 2014–2023 (dominant ~2019+) |
+| 0002012383 | BlackRock, Inc. | 2026+ (dominant) |
+| 0000913414 | BlackRock Institutional Trust Company, N.A. | 2014–2016, material |
+| 0001006249 | BlackRock Fund Advisors | 2014–2016, material |
+| 0000093751 | STATE STREET CORP | 2015–2026, stable throughout |
+| 0001214717 | GEODE CAPITAL MANAGEMENT, LLC | 2015–2026, stable throughout |
+| 0000073124 | NORTHERN TRUST CORP | 2015–2026, stable throughout |
+| 0000884546 | CHARLES SCHWAB INVESTMENT MANAGEMENT INC | 2015–2026, stable throughout |
+| 0001501902 | Charles Schwab Investment Advisory, Inc. | 2015–2023, stable |
 
-Geode (Fidelity's dedicated index-fund sub-adviser) is excluded, but FMR LLC (Fidelity's broader active+passive complex, ~$1.9T) deliberately is **not** — excluding it would remove genuine active-manager signal, not just mechanical index flows. Deliberately small and not exhaustive, matching the "curated exclusion list, not exhaustive classification" scope decision — disclosed as such, not claimed complete.
+Geode (Fidelity's dedicated index-fund sub-adviser) is excluded, but FMR LLC (Fidelity's broader active+passive complex) deliberately is **not** — excluding it would remove genuine active-manager signal, not just mechanical index flows. Deliberately small and not exhaustive (BlackRock alone files through ~25 additional smaller international/regional subsidiary CIKs, not individually verified for materiality and not included) — matching the "curated exclusion list, not exhaustive classification" scope decision, disclosed as such rather than claimed complete.
 
 ### `load_cusip_ticker_map` — supporting multiple ticker aliases per CUSIP
 Adding the FB/META and BK/BNY override pairs exposed a real design gap: the original override-layering logic deduped strictly by CUSIP (`drop_duplicates(subset="CUSIP", keep="last")`), which would have silently kept only one of two legitimate alias rows for the same CUSIP. Fixed: overrides now **fully supersede** the base map's row(s) for any CUSIP they cover (rather than merge-and-dedupe), so `cusip_overrides.csv` can list a CUSIP more than once deliberately. `cusip_to_ticker`'s forward (CUSIP → ticker) direction still wants exactly one canonical answer per CUSIP, so it dedupes defensively (`keep="last"`) before building its lookup — the two lookup directions have genuinely different uniqueness requirements on the same table, and now both are handled correctly.
@@ -125,20 +132,20 @@ The exact `[CUSIP, breadth]` shape `factor.py` (Phase 3) will consume — point-
 | `sp500_history.csv` | 585KB | 287 | One-time download + trim of `fja05680/sp500`'s MIT-licensed history, via `python -m src.universe --build-sp500-history` |
 | `cusip_ticker_map.csv` | 301KB | 7,998 | One-time `python -m src.mapping --build` (OpenFIGI, resolved candidates only, `min_breadth=100`) |
 | `cusip_overrides.csv` | 3.1KB | 6 | Manual curation: 2 real CUSIP-change corporate actions (Honeywell reverse split, Medtronic Ireland redomicile) + 2 real ticker-rename alias pairs (META/FB, BNY/BK) |
-| `passive_manager_ciks.csv` | 2.4KB | 9 | Manual curation, cross-verified against real `FILINGMANAGER_NAME` data |
+| `passive_manager_ciks.csv` | 3.9KB | 14 | Manual curation, cross-verified against real `FILINGMANAGER_NAME` data at 4 points spread across 2015–2026 (see [Bias audit](#post-report-bias-audit-a-survivorship-bias-bug-in-the-passive-manager-exclusion)) |
 | `SOURCES.md` | 9.7KB | — | Full source URL, license, retrieval date, and transformation for every file above, including all bug/fix narratives |
 
 ---
 
 ## Test coverage
 
-68 tests, all passing (grown from 39 at the start of this phase):
+69 tests, all passing (grown from 39 at the start of this phase):
 
 | File | Tests | What's new in Phase 2 |
 |---|---|---|
 | `test_ingest.py` | 29 | +6: `_clean_coverpage` (flag logic, date coercion, dedup), left-join-survives-missing-coverpage, end-to-end confidentiality-flag flow, CIK `zfill` |
 | `test_mapping.py` | 21 (new file) | `candidate_cusips` filtering; `_choose_primary_listing` correctness (including the real XOM edge case as a fixture); batching at both batch sizes; API-key header; 429 and connection-error retry; checkpoint resume after a simulated failure; the `RESOLVED` dtype regression test; override loading, including the multi-alias-per-CUSIP case; `cusip_to_ticker`; `unmapped_summary`; `sp500_ticker_coverage` |
-| `test_universe.py` | 8 (new file) | `sp500_members` as-of-date correctness (including the exact-change-date boundary), out-of-range error, unmapped-ticker exclusion; `passive_manager_ciks` zfill + missing-file error; end-to-end `sp500_universe_breadth` (including passive-CIK exclusion and out-of-universe filtering in one fixture); `build_sp500_history` window-trim + consecutive-duplicate-row dedup |
+| `test_universe.py` | 9 (new file) | `sp500_members` as-of-date correctness (including the exact-change-date boundary), out-of-range error, unmapped-ticker exclusion; `passive_manager_ciks` zfill + missing-file error + the real-file both-eras regression guard (see Bias audit); end-to-end `sp500_universe_breadth` (including passive-CIK exclusion and out-of-universe filtering in one fixture); `build_sp500_history` window-trim + consecutive-duplicate-row dedup |
 | `test_pit.py` | 10 | unchanged from Phase 1 |
 
 All new network-touching functions (`fetch_openfigi_mappings`, `build_sp500_history`) are tested via `monkeypatch`, never real network calls in the test suite itself — consistent with the pattern established in Phase 1.
@@ -155,6 +162,44 @@ Ran `universe.sp500_universe_breadth()` against the real ingested sample panel (
 - **100% of returned CUSIPs** are within the S&P 500 as of that date (cross-checked against `sp500_members()` independently).
 - Breadth values are plausible and match real-world institutional ownership patterns: MSFT (`594918104`) tops the list at 6,122 distinct filers, AAPL (`037833100`) at 6,027, AMZN (`023135106`) at 5,931; median breadth across the 429 names is 1,172.
 - Universe size (S&P 500 CUSIPs resolvable as of that date): 430 — meaning ~85% of the *current* S&P 500 constituents resolve correctly, notably higher than the 65.1% aggregate-across-history figure, consistent with the diagnosis above (current, still-independently-trading names resolve far more reliably than the full 14-year historical set, which includes many now-defunct tickers).
+
+---
+
+## Post-report bias audit — a survivorship-bias bug in the passive-manager exclusion
+
+The case-study prompt explicitly asks for care around bias and lookahead. After this report's initial version, a dedicated audit pass re-examined every phase for lookahead bias, survivorship bias, and other data-manipulation risk, using the same "verify against real data, don't assume" discipline as the rest of this phase. This is what it found.
+
+### The bug
+`passive_manager_ciks.csv` was originally built by cross-checking candidate CIKs against real `FILINGMANAGER_NAME` data — but only in the **most recent (2026) quarter**. That single-quarter check correctly caught that external SEC EDGAR lookups for Vanguard, BlackRock, and Northern Trust were stale (see the original write-up above) — but it inherited the identical mistake one level down: the *replacement* CIKs it found were themselves only valid for the most recent quarter or two.
+
+Checking `FILINGMANAGER_NAME`/`VALUE` at four points spread across the full backtest window (2015q1, 2019q1, 2023q4, 2026) — using the cached raw zips already on disk, no new downloads needed — found that **Vanguard and BlackRock each used an entirely different CIK for most of 2013–2025**:
+
+- **Vanguard**: filed as `0000102909` ("VANGUARD GROUP INC") from at least 2014 through 2025 ($1.4B in 2015q1 → $8.1T in 2023q4, post the 2023 VALUE-unit change). This is the exact CIK an earlier external SEC EDGAR lookup had found — and which was discarded as "stale" purely because it didn't appear in the 2026 quarter checked at the time, without verifying whether it had been the *correct* CIK for every prior year.
+- **BlackRock**: filed under several subsidiary CIKs in 2014–2016 (`0000913414` "BlackRock Institutional Trust Company, N.A.", `0001006249` "BlackRock Fund Advisors", among ~25 smaller international entities), consolidating to a dominant `0001364742` ("BlackRock Inc.") by 2019 ($2.0B) through 2023 ($3.5T).
+- Both managers then transitioned to newly issued CIKs sometime close to 2026 (`0002100119`/`0002100121` for Vanguard, `0002012383` for BlackRock) — the CIKs the original single-quarter check found.
+- State Street, Geode, Northern Trust, and Schwab were checked at the same four points and found to have used one stable CIK throughout — no fix needed for those.
+
+**Practical effect**: the passive-manager exclusion was a silent no-op for roughly 13 of the ~13.5-year backtest window. Vanguard and BlackRock's mechanical, index-driven holdings — the exact "not a positioning signal" flows the exclusion exists to remove — would have counted toward every stock's breadth for nearly the entire backtest, undermining the core premise of the factor design for most of its history while appearing to work correctly (since it *did* work in the one quarter anyone checked).
+
+### The fix
+`passive_manager_ciks.csv` now lists CIKs for **both** eras wherever a transition was found (14 entries total, up from 9) — see the corrected table above. Verified end-to-end by recomputing AAPL's breadth with and without exclusion at both an early-window date (period 2014-12-31, as-of 2015-05-15) and a recent date (period 2026-03-31, as-of 2026-05-29):
+
+| | Early window (2015) | Recent (2026) |
+|---|---|---|
+| Passive AAPL holders excluded | 8 (all old-era CIKs) | 9 (all new-era CIKs) |
+| Breadth, all filers | 2,119 | 6,032 |
+| Breadth, passive excluded | 2,111 | 6,027 |
+
+Before the fix, the early-window check would have found **zero** passive holders to exclude. A regression test (`test_passive_manager_ciks_covers_both_eras_of_known_cik_transitions`) checks the real committed file — not a synthetic fixture — for the presence of both eras' Vanguard and BlackRock CIKs, so this can't silently regress.
+
+### Other bias vectors reviewed, found low-risk or already disclosed
+- **`candidate_cusips()`'s cumulative-breadth pre-filter** uses breadth summed over the *entire* 2013–2026 window to decide which CUSIPs get queried against OpenFIGI, which is future information relative to any early backtest date. Assessed as low-risk: it only gates whether a CUSIP gets a row in the static ticker crosswalk at all, not any per-date signal value (`pit.breadth()` always computes the live signal using only `FILING_DATE <= as_of_date` data, unaffected by this). A genuinely large historical name would clear `min_breadth=100` from its own active years alone. Not fixed, but explicitly flagged here as reviewed rather than assumed safe.
+- **The OpenFIGI current-ticker-only limitation** (documented above under `cusip_ticker_map.csv`) is itself a survivorship-bias mechanism — it was already identified and disclosed before this audit pass, but is re-flagged here under the correct technical name: a company acquired or delisted mid-window systematically drops out of the point-in-time S&P 500 universe reconstruction, not just after its delisting date but potentially at earlier dates too if its historical ticker can't be resolved. Mitigated, not eliminated, by the `cusip_overrides.csv` alias pattern (META/FB, BNY/BK).
+- **`sp500_history.csv`'s point-in-time correctness**: dates in the source data represent historical effective dates of index changes (as documented by Wikipedia's S&P 500 change history, which records changes as publicly announced in advance of taking effect), not a "discovery" or backfill date — using this data for an `as_of_date <= today` lookup does not introduce lookahead.
+- **`pit.py`'s no-lookahead guarantee** (Phase 1) was not modified in Phase 2 and remains covered by its original 10-test suite; this audit did not find any Phase 2 code path that bypasses or weakens it.
+
+### Lesson applied going forward
+Any entity/CIK identification done against a single quarter of data — especially only the most recent one — should be treated as unverified for the rest of the backtest window until cross-checked against multiple, well-spread historical points. An entity filing under a stable identity in one era is not evidence it used that identity throughout. This same discipline should be applied before Phase 3/4 trust any other "current snapshot" derived input.
 
 ---
 

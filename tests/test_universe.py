@@ -102,6 +102,26 @@ def test_passive_manager_ciks_missing_file_raises():
         passive_manager_ciks(path="does_not_exist.csv")
 
 
+def test_passive_manager_ciks_covers_both_eras_of_known_cik_transitions():
+    # Regression guard for a real bug: the first cut of this file was built
+    # from a single (2026) quarter and only captured each manager's CURRENT
+    # CIK. Verified against real data at 2015/2019/2023/2026 that Vanguard
+    # and BlackRock each filed under a *different* CIK for most of the
+    # 2013-2025 backtest window -- silently making the exclusion a no-op
+    # for ~13 of ~13.5 years. This checks the real committed file (not a
+    # synthetic fixture) so a future edit can't reintroduce a single-era
+    # snapshot without this test catching it.
+    ciks = passive_manager_ciks()
+
+    # Vanguard: pre-2026 dominant CIK and 2026-era dominant CIKs.
+    assert "0000102909" in ciks  # VANGUARD GROUP INC, dominant 2013-2025
+    assert "0002100119" in ciks  # VANGUARD CAPITAL MANAGEMENT LLC, dominant 2026+
+
+    # BlackRock: pre-2026 dominant CIK and 2026-era dominant CIK.
+    assert "0001364742" in ciks  # BlackRock Inc., dominant ~2019-2023
+    assert "0002012383" in ciks  # BlackRock, Inc., dominant 2026+
+
+
 def test_sp500_universe_breadth_restricts_to_universe_and_excludes_passive(tmp_path):
     history_path = tmp_path / "sp500_history.csv"
     _write_history(history_path, [("2020-01-01", "AAPL,MSFT")])
