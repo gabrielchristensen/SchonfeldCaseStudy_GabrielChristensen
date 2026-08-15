@@ -20,6 +20,11 @@ Note for future phases: VALUE's units changed on 2023-01-03 (thousands of
 dollars before, whole dollars after) -- irrelevant to the breadth factor
 (which only counts distinct filers), but must be corrected before VALUE is
 used for anything value-weighted.
+
+Webscrapping maxtime = 3min * Number of Quarters + 30s 
+(timeout to scrape the hrefs is 30s, while timeout to zipfiles requests are
+180s)
+
 """
 
 import argparse
@@ -36,7 +41,7 @@ SEC_INDEX_URL = "https://www.sec.gov/data-research/sec-markets-data/form-13f-dat
 SEC_FILE_BASE = "https://www.sec.gov/files/structureddata/data/form-13f-data-sets"
 USER_AGENT = "SchonfeldCaseStudy gabriel.christensen2019@gmail.com"
 
-RAW_DIR = Path("data/raw/13f")
+RAW_DIR = Path("data/raw/13f") #Use of Path instead of a string so there are no problems caused by different OS
 
 # Only these columns are ever read downstream (see _clean_submission /
 # _clean_infotable) -- restricting parsing to them cuts I/O and peak memory
@@ -46,7 +51,7 @@ RAW_DIR = Path("data/raw/13f")
 _SUBMISSION_COLUMNS = ["ACCESSION_NUMBER", "FILING_DATE", "SUBMISSIONTYPE", "CIK", "PERIODOFREPORT"]
 _INFOTABLE_COLUMNS = ["ACCESSION_NUMBER", "CUSIP", "VALUE", "SSHPRNAMT"]
 
-
+#Simple function to not repeat the hashmap everytime. Also, if there is any future change in the headers required, it is simples to adjust
 def _headers() -> dict:
     return {"User-Agent": USER_AGENT}
 
@@ -57,9 +62,14 @@ def list_datasets() -> list[str]:
     Returns the actual scraped href (resolved to an absolute URL), not a
     filename reconstructed against SEC_FILE_BASE -- if SEC ever serves a
     dataset from a different path, this still finds it.
+
+    use of urljoin in case of relative link
+
+    use of set to avoid duplicates
+    
     """
     resp = requests.get(SEC_INDEX_URL, headers=_headers(), timeout=30)
-    resp.raise_for_status()
+    resp.raise_for_status() #Throw exception if failure on status code (ex: 404)
     hrefs = re.findall(r'href="([^"]*_form13f\.zip)"', resp.text, re.I)
     return sorted({urljoin(SEC_INDEX_URL, href) for href in hrefs})
 
@@ -76,12 +86,12 @@ def download_dataset(url_or_filename: str, dest_dir: Path = RAW_DIR, *, force: b
     """
     dest_dir.mkdir(parents=True, exist_ok=True)
     url = url_or_filename if url_or_filename.startswith("http") else f"{SEC_FILE_BASE}/{url_or_filename}"
-    filename = url.rsplit("/", 1)[-1]
-    dest = dest_dir / filename
+    filename = url.rsplit("/", 1)[-1] #extracts filename from the end of a URL/path
+    dest = dest_dir / filename #join a directory path with a filename.
     if dest.exists() and not force:
         return dest
-    resp = requests.get(url, headers=_headers(), timeout=180)
-    resp.raise_for_status()
+    resp = requests.get(url, headers=_headers(), timeout=180) #Bigger timeout margins because the zipfiles are bigger
+    resp.raise_for_status() 
     tmp = dest.with_suffix(dest.suffix + ".part")
     tmp.write_bytes(resp.content)
     tmp.replace(dest)  # atomic on same filesystem
