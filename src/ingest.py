@@ -22,6 +22,7 @@ dollars before, whole dollars after) -- irrelevant to the breadth factor
 used for anything value-weighted.
 """
 
+import argparse
 import re
 import time
 import zipfile
@@ -118,14 +119,35 @@ def build_raw_panel(filenames: list[str], dest_dir: Path = RAW_DIR) -> pd.DataFr
     return pd.concat(frames, ignore_index=True)
 
 
-if __name__ == "__main__":
-    # Phase 1 validation run: a handful of real datasets spanning both naming
-    # schemes, proving the pipeline end-to-end. The full ~40-dataset
-    # historical backfill is a separate, later batch run.
-    sample = ["2013q2_form13f.zip", "2015q1_form13f.zip", "01mar2026-31may2026_form13f.zip"]
-    panel = build_raw_panel(sample)
-    out_path = Path("data/processed/13f_panel_sample.parquet")
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Download and parse every dataset currently listed on the SEC "
+        "index page (~55 zips, several GB, takes a while) instead of the "
+        "3-dataset validation sample. The exact set of datasets depends on "
+        "what SEC has published as of run time, so this is not bit-for-bit "
+        "reproducible across runs -- re-running later will pick up newly "
+        "published quarters.",
+    )
+    args = parser.parse_args()
+
+    if args.full:
+        filenames = list_datasets()
+        out_path = Path("data/processed/13f_panel_full.parquet")
+    else:
+        # Phase 1 validation run: a handful of real datasets spanning both
+        # naming schemes, proving the pipeline end-to-end.
+        filenames = ["2013q2_form13f.zip", "2015q1_form13f.zip", "01mar2026-31may2026_form13f.zip"]
+        out_path = Path("data/processed/13f_panel_sample.parquet")
+
+    panel = build_raw_panel(filenames)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     panel.to_parquet(out_path)
-    print(f"{len(panel):,} rows across {panel['ACCESSION_NUMBER'].nunique():,} filings "
-          f"-> {out_path}")
+    print(f"{len(filenames)} datasets -> {len(panel):,} rows across "
+          f"{panel['ACCESSION_NUMBER'].nunique():,} filings -> {out_path}")
+
+
+if __name__ == "__main__":
+    main()

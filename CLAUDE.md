@@ -28,7 +28,9 @@ results/       # generated backtest report (self-contained HTML deliverable)
 ## Commands
 
 ```bash
-pytest         # run tests
+pytest                        # run tests
+python -m src.ingest          # build the 3-dataset validation sample panel
+python -m src.ingest --full   # download+parse every SEC-listed dataset (~55 zips, several GB)
 ```
 
 ## Conventions
