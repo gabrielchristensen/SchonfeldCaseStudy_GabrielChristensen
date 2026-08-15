@@ -4,6 +4,45 @@ Every file in this directory is either a one-time build-script output or a
 manually curated table. None require network access at pipeline runtime --
 only the build scripts noted below do, and only when regenerating a file.
 
+## Maintenance cadence -- what needs re-running when a new quarter of 13F data arrives
+
+None of this requires redoing the full OpenFIGI build from scratch every
+quarter, though it isn't obvious from a first read of the build scripts.
+
+- **`cusip_ticker_map.csv` (the slow, OpenFIGI-dependent one): incremental,
+  not full, by design.** `build_cusip_ticker_map()` writes progress to a
+  checkpoint file (`data/processed/cusip_ticker_map_progress.csv`, default
+  path baked into the CLI) as it goes -- built originally for *resilience*
+  (a transient network failure mid-run shouldn't lose ~49 minutes of
+  progress, see the real incident below), but it doubles as a *cache across
+  separate invocations*. Re-running `python -m src.mapping --build` next
+  quarter (without `--fresh`) recomputes `candidate_cusips()` against the
+  updated panel, skips every CUSIP already in the checkpoint, and only
+  queries OpenFIGI for the *delta* -- CUSIPs that newly cleared the breadth
+  threshold since the last run. In practice that delta should be small:
+  S&P 500 turnover is ~20-30 names/year, and most new entrants were already
+  mid/large-cap companies with existing institutional following, likely
+  already resolved in a prior build. Deleting the checkpoint (or passing
+  `--fresh`) forces a full re-query -- worth doing occasionally (e.g.
+  annually) to catch drift, see the gap below, but not a per-quarter
+  necessity.
+- **`sp500_history.csv`: needs a lightweight refresh each quarter.**
+  `python -m src.universe --build-sp500-history` re-downloads the upstream
+  membership file to pick up index reconstitution changes. No OpenFIGI
+  involved -- a small GitHub CSV download, seconds not minutes.
+- **`passive_manager_ciks.csv` / `cusip_overrides.csv`: essentially static.**
+  Only need a manual update on a rare event -- a passive manager doing
+  another CIK transition (found to happen roughly once per decade, see
+  below) or a new corporate action (rename/spinoff) affecting a specific
+  tracked name.
+- **The real gap**: the checkpoint-based incremental approach only handles
+  *new* CUSIPs. It does not re-check whether an *already-mapped* CUSIP's
+  correct ticker has since changed (a corporate action mid-life, like the
+  Honeywell/Medtronic/Meta/BNY cases below) -- those still require the same
+  kind of manual override curation done for those four. The operational
+  pattern is therefore: cheap incremental refresh every quarter, plus an
+  occasional full `--fresh` rebuild to catch drift in already-mapped names.
+
 ## `sp500_history.csv`
 
 - **Source**: [fja05680/sp500](https://github.com/fja05680/sp500),
