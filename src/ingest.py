@@ -25,6 +25,9 @@ Webscrapping maxtime = 3min * Number of Quarters + 30s
 (timeout to scrape the hrefs is 30s, while timeout to zipfiles requests are
 180s)
 
+Final columns: (CIK, PERIODOFREPORT, ACCESSION_NUMBER, FILING_DATE, SUBMISSIONTYPE,
+CUSIP, VALUE, SSHPRNAMT)
+
 """
 
 import argparse
@@ -92,8 +95,8 @@ def download_dataset(url_or_filename: str, dest_dir: Path = RAW_DIR, *, force: b
         return dest
     resp = requests.get(url, headers=_headers(), timeout=180) #Bigger timeout margins because the zipfiles are bigger
     resp.raise_for_status() 
-    tmp = dest.with_suffix(dest.suffix + ".part")
-    tmp.write_bytes(resp.content)
+    tmp = dest.with_suffix(dest.suffix + ".part") #creates file as .part
+    tmp.write_bytes(resp.content)   
     tmp.replace(dest)  # atomic on same filesystem
     time.sleep(0.2)  # polite spacing; nowhere near the 10 req/sec SEC fair-access limit
     return dest
@@ -101,6 +104,7 @@ def download_dataset(url_or_filename: str, dest_dir: Path = RAW_DIR, *, force: b
 
 def parse_dataset(zip_path: Path) -> dict[str, pd.DataFrame]:
     """Parse the SUBMISSION and INFOTABLE tables out of a dataset ZIP.
+    ZIP -> TSV -> pandas DF
 
     Most datasets store the TSVs at the zip root, but at least one observed
     dataset (01jun2025-31aug2025) nests them under a subfolder instead
@@ -108,21 +112,21 @@ def parse_dataset(zip_path: Path) -> dict[str, pd.DataFrame]:
     exact path, to be robust to that inconsistency.
     """
     tables = {}
-    usecols = {"SUBMISSION": _SUBMISSION_COLUMNS, "INFOTABLE": _INFOTABLE_COLUMNS}
-    with zipfile.ZipFile(zip_path) as zf:
+    usecols = {"SUBMISSION": _SUBMISSION_COLUMNS, "INFOTABLE": _INFOTABLE_COLUMNS} #Filter for only useful cols
+    with zipfile.ZipFile(zip_path) as zf: #this method saves us from extracting the whole zip
         members = {name.rsplit("/", 1)[-1].upper(): name for name in zf.namelist()}
         for table in ("SUBMISSION", "INFOTABLE"):
             member = members[f"{table}.TSV"]
             with zf.open(member) as fh:
-                tables[table.lower()] = pd.read_csv(fh, sep="\t", dtype=str, usecols=usecols[table])
+                tables[table.lower()] = pd.read_csv(fh, sep="\t", dtype=str, usecols=usecols[table]) #type str to preserve original data
     return tables
 
 
 def _clean_submission(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df["FILING_DATE"] = pd.to_datetime(df["FILING_DATE"], format="%d-%b-%Y")
+    df = df.copy() 
+    df["FILING_DATE"] = pd.to_datetime(df["FILING_DATE"], format="%d-%b-%Y") #the explicit format improves efficiency
     df["PERIODOFREPORT"] = pd.to_datetime(df["PERIODOFREPORT"], format="%d-%b-%Y")
-    df["CIK"] = df["CIK"].str.strip()
+    df["CIK"] = df["CIK"].str.strip() #remove blanks at the end and beggining of the str
     return df[["ACCESSION_NUMBER", "FILING_DATE", "SUBMISSIONTYPE", "CIK", "PERIODOFREPORT"]]
 
 
@@ -140,12 +144,12 @@ def _clean_infotable(df: pd.DataFrame) -> pd.DataFrame:
     instead of silently becoming a fake zero.
     """
     df = df.copy()
-    df["VALUE"] = pd.to_numeric(df["VALUE"], errors="coerce")
+    df["VALUE"] = pd.to_numeric(df["VALUE"], errors="coerce") #NaN if error
     df["SSHPRNAMT"] = pd.to_numeric(df["SSHPRNAMT"], errors="coerce")
     df["CUSIP"] = df["CUSIP"].str.strip().str.upper()
     return (
-        df.groupby(["ACCESSION_NUMBER", "CUSIP"], as_index=False)
-        .agg(
+        df.groupby(["ACCESSION_NUMBER", "CUSIP"], as_index=False) #one row per security per filing
+        .agg( #aggregates value and quantity 
             VALUE=("VALUE", lambda s: s.sum(min_count=1)),
             SSHPRNAMT=("SSHPRNAMT", lambda s: s.sum(min_count=1)),
         )
@@ -181,13 +185,13 @@ def build_raw_panel(
         tables = parse_dataset(zip_path)
         submission = _clean_submission(tables["submission"])
         infotable = _clean_infotable(tables["infotable"])
-        merged = submission.merge(infotable, on="ACCESSION_NUMBER", how="inner")
+        merged = submission.merge(infotable, on="ACCESSION_NUMBER", how="inner") #13F-NTs dont have INFOTABLE 
         if checkpoint_path is not None:
             checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
             merged.to_parquet(checkpoint_path)
         frames.append(merged)
-    panel = pd.concat(frames, ignore_index=True)
-    return panel.drop_duplicates(subset=["ACCESSION_NUMBER", "CUSIP"]).reset_index(drop=True)
+    panel = pd.concat(frames, ignore_index=True) #concat to one file
+    return panel.drop_duplicates(subset=["ACCESSION_NUMBER", "CUSIP"]).reset_index(drop=True) #remove duplicates
 
 
 def main() -> None:
