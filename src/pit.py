@@ -36,7 +36,7 @@ def _winning_accessions(panel: pd.DataFrame, period_of_report, as_of_date) -> se
         .sort_values(["CIK", "FILING_DATE", "ACCESSION_NUMBER"])
     )
     winners = submissions.groupby("CIK")["ACCESSION_NUMBER"].last()
-    return set(winners)
+    return set(winners) #Return the ACCESION_NUMBER winners for the as_of_date period in a set (for efficiency)
 
 
 def as_of_snapshot(panel: pd.DataFrame, period_of_report, as_of_date) -> pd.DataFrame:
@@ -46,7 +46,7 @@ def as_of_snapshot(panel: pd.DataFrame, period_of_report, as_of_date) -> pd.Data
     """
     winning = _winning_accessions(panel, period_of_report, as_of_date)
     if not winning:
-        return panel.iloc[0:0]
+        return panel.iloc[0:0] #empty df instead of None/[] to avoid crashes
     return panel[panel["ACCESSION_NUMBER"].isin(winning)].reset_index(drop=True)
 
 
@@ -60,5 +60,5 @@ def breadth(
     """Distinct filer-CIK count per CUSIP, as known as of `as_of_date`."""
     snap = as_of_snapshot(panel, period_of_report, as_of_date)
     if exclude_ciks:
-        snap = snap[~snap["CIK"].isin(exclude_ciks)]
-    return snap.groupby("CUSIP")["CIK"].nunique().rename("breadth").reset_index()
+        snap = snap[~snap["CIK"].isin(exclude_ciks)] #REMOVE PASSIVE PPLAYERS
+    return snap.groupby("CUSIP")["CIK"].nunique().rename("breadth").reset_index() #for each CUSIP, return breadth
