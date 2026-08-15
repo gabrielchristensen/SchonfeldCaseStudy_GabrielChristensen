@@ -8,6 +8,7 @@ import pytest
 import requests
 
 from src.ingest import (
+    _clean_coverpage,
     _clean_infotable,
     _clean_submission,
     build_raw_panel,
@@ -108,10 +109,79 @@ def test_clean_submission_parses_sec_date_format_and_strips_cik():
     assert cleaned.loc[0, "CIK"] == "0000823621"
 
 
+def test_clean_submission_zfills_unpadded_cik():
+    # Real data has the same filer appearing both zero-padded and not (e.g.
+    # "1349434" and "0001349434") -- an exact-match CIK exclusion list
+    # downstream would silently miss one form without this normalization.
+    raw = pd.DataFrame({
+        "ACCESSION_NUMBER": ["A1"],
+        "FILING_DATE": ["31-MAY-2013"],
+        "SUBMISSIONTYPE": ["13F-HR"],
+        "CIK": ["1349434"],
+        "PERIODOFREPORT": ["31-MAR-2013"],
+    })
+    cleaned = _clean_submission(raw)
+
+    assert cleaned.loc[0, "CIK"] == "0001349434"
+
+
+def test_clean_coverpage_flags_confidentiality_only_on_y():
+    raw = pd.DataFrame({
+        "ACCESSION_NUMBER": ["A1", "A2", "A3"],
+        "FILINGMANAGER_NAME": [" Alyeska Investment Group, L.P. ", "Blank Corp", "No Corp"],
+        "CONFDENIEDEXPIRED": ["Y", "N", ""],
+        "DATEDENIEDEXPIRED": ["04-MAR-2013", "", ""],
+        "DATEREPORTED": ["14-NOV-2012", "", ""],
+        "REASONFORNONCONFIDENTIALITY": ["Confidential Treatment Expired", "", ""],
+    })
+    cleaned = _clean_coverpage(raw)
+
+    flags = cleaned.set_index("ACCESSION_NUMBER")["CONFIDENTIAL_TREATMENT_FLAG"].to_dict()
+    assert flags == {"A1": True, "A2": False, "A3": False}
+    assert cleaned.loc[cleaned["ACCESSION_NUMBER"] == "A1", "FILINGMANAGER_NAME"].iloc[0] == "Alyeska Investment Group, L.P."
+
+
+def test_clean_coverpage_coerces_blank_dates_to_nat():
+    raw = pd.DataFrame({
+        "ACCESSION_NUMBER": ["A1"],
+        "FILINGMANAGER_NAME": ["Blank Corp"],
+        "CONFDENIEDEXPIRED": [""],
+        "DATEDENIEDEXPIRED": [""],
+        "DATEREPORTED": [""],
+        "REASONFORNONCONFIDENTIALITY": [""],
+    })
+    cleaned = _clean_coverpage(raw)
+
+    assert pd.isna(cleaned.loc[0, "DATEDENIEDEXPIRED"])
+    assert pd.isna(cleaned.loc[0, "DATEREPORTED"])
+
+
+def test_clean_coverpage_dedups_duplicate_accession_defensively():
+    raw = pd.DataFrame({
+        "ACCESSION_NUMBER": ["A1", "A1"],
+        "FILINGMANAGER_NAME": ["First Name", "Second Name"],
+        "CONFDENIEDEXPIRED": ["", ""],
+        "DATEDENIEDEXPIRED": ["", ""],
+        "DATEREPORTED": ["", ""],
+        "REASONFORNONCONFIDENTIALITY": ["", ""],
+    })
+    cleaned = _clean_coverpage(raw)
+
+    assert len(cleaned) == 1
+    assert cleaned.loc[0, "FILINGMANAGER_NAME"] == "First Name"
+
+
 def _write_zip(path, members: dict):
     with zipfile.ZipFile(path, "w") as zf:
         for name, content in members.items():
             zf.writestr(name, content)
+
+
+_SAMPLE_COVERPAGE_TSV = (
+    "ACCESSION_NUMBER\tFILINGMANAGER_NAME\tCONFDENIEDEXPIRED\tDATEDENIEDEXPIRED\t"
+    "DATEREPORTED\tREASONFORNONCONFIDENTIALITY\n"
+    "A1\tSample Capital LLC\t\t\t\t\n"
+)
 
 
 def test_parse_dataset_handles_flat_and_nested_zip_layouts(tmp_path):
@@ -119,10 +189,15 @@ def test_parse_dataset_handles_flat_and_nested_zip_layouts(tmp_path):
     infotable_tsv = "ACCESSION_NUMBER\tCUSIP\tVALUE\tSSHPRNAMT\nA1\t037833100\t100\t10\n"
 
     flat_zip = tmp_path / "flat.zip"
-    _write_zip(flat_zip, {"SUBMISSION.tsv": submission_tsv, "INFOTABLE.tsv": infotable_tsv})
+    _write_zip(flat_zip, {
+        "SUBMISSION.tsv": submission_tsv,
+        "INFOTABLE.tsv": infotable_tsv,
+        "COVERPAGE.tsv": _SAMPLE_COVERPAGE_TSV,
+    })
     flat_tables = parse_dataset(flat_zip)
     assert len(flat_tables["submission"]) == 1
     assert len(flat_tables["infotable"]) == 1
+    assert len(flat_tables["coverpage"]) == 1
 
     # Real-world quirk: at least one SEC dataset (01jun2025-31aug2025) nests
     # its TSVs under a subfolder instead of the zip root.
@@ -130,10 +205,12 @@ def test_parse_dataset_handles_flat_and_nested_zip_layouts(tmp_path):
     _write_zip(nested_zip, {
         "SOME_FOLDER/SUBMISSION.tsv": submission_tsv,
         "SOME_FOLDER/INFOTABLE.tsv": infotable_tsv,
+        "SOME_FOLDER/COVERPAGE.tsv": _SAMPLE_COVERPAGE_TSV,
     })
     nested_tables = parse_dataset(nested_zip)
     assert len(nested_tables["submission"]) == 1
     assert len(nested_tables["infotable"]) == 1
+    assert len(nested_tables["coverpage"]) == 1
 
 
 def test_parse_dataset_ignores_unused_columns(tmp_path):
@@ -148,8 +225,17 @@ def test_parse_dataset_ignores_unused_columns(tmp_path):
         "ACCESSION_NUMBER\tCUSIP\tNAMEOFISSUER\tVALUE\tSSHPRNAMT\tPUTCALL\n"
         "A1\t037833100\tAPPLE INC\t100\t10\t\n"
     )
+    coverpage_tsv = (
+        "ACCESSION_NUMBER\tFILINGMANAGER_NAME\tCONFDENIEDEXPIRED\tDATEDENIEDEXPIRED\t"
+        "DATEREPORTED\tREASONFORNONCONFIDENTIALITY\tCRDNUMBER\n"
+        "A1\tSample Capital LLC\t\t\t\t\t12345\n"
+    )
     zip_path = tmp_path / "extra_columns.zip"
-    _write_zip(zip_path, {"SUBMISSION.tsv": submission_tsv, "INFOTABLE.tsv": infotable_tsv})
+    _write_zip(zip_path, {
+        "SUBMISSION.tsv": submission_tsv,
+        "INFOTABLE.tsv": infotable_tsv,
+        "COVERPAGE.tsv": coverpage_tsv,
+    })
 
     tables = parse_dataset(zip_path)
 
@@ -157,16 +243,25 @@ def test_parse_dataset_ignores_unused_columns(tmp_path):
         "ACCESSION_NUMBER", "FILING_DATE", "SUBMISSIONTYPE", "CIK", "PERIODOFREPORT",
     ]
     assert list(tables["infotable"].columns) == ["ACCESSION_NUMBER", "CUSIP", "VALUE", "SSHPRNAMT"]
+    assert list(tables["coverpage"].columns) == [
+        "ACCESSION_NUMBER", "FILINGMANAGER_NAME", "CONFDENIEDEXPIRED",
+        "DATEDENIEDEXPIRED", "DATEREPORTED", "REASONFORNONCONFIDENTIALITY",
+    ]
 
 
 def test_parse_dataset_matches_member_names_case_insensitively(tmp_path):
     zip_path = tmp_path / "lowercase_members.zip"
-    _write_zip(zip_path, {"submission.tsv": _SAMPLE_SUBMISSION_TSV, "infotable.tsv": _SAMPLE_INFOTABLE_TSV})
+    _write_zip(zip_path, {
+        "submission.tsv": _SAMPLE_SUBMISSION_TSV,
+        "infotable.tsv": _SAMPLE_INFOTABLE_TSV,
+        "coverpage.tsv": _SAMPLE_COVERPAGE_TSV,
+    })
 
     tables = parse_dataset(zip_path)
 
     assert len(tables["submission"]) == 1
     assert len(tables["infotable"]) == 1
+    assert len(tables["coverpage"]) == 1
 
 
 class _FakeResponse:
@@ -296,6 +391,7 @@ def test_build_raw_panel_dedups_filing_that_appears_in_two_datasets(tmp_path):
         _write_zip(dest_dir / name, {
             "SUBMISSION.tsv": _SAMPLE_SUBMISSION_TSV,
             "INFOTABLE.tsv": _SAMPLE_INFOTABLE_TSV,
+            "COVERPAGE.tsv": _SAMPLE_COVERPAGE_TSV,
         })
 
     panel = build_raw_panel(["ds1_form13f.zip", "ds2_form13f.zip"], dest_dir=dest_dir)
@@ -317,11 +413,23 @@ def test_build_raw_panel_keeps_distinct_filings_across_datasets(tmp_path):
         "B1\t30-JUN-2015\t13F-HR\t2\t31-MAR-2015\n"
     )
     infotable_tsv_2 = "ACCESSION_NUMBER\tCUSIP\tVALUE\tSSHPRNAMT\nB1\t037833100\t500\t50\n"
+    coverpage_tsv_1 = (
+        "ACCESSION_NUMBER\tFILINGMANAGER_NAME\tCONFDENIEDEXPIRED\tDATEDENIEDEXPIRED\t"
+        "DATEREPORTED\tREASONFORNONCONFIDENTIALITY\nA1\tManager One LLC\t\t\t\t\n"
+    )
+    coverpage_tsv_2 = (
+        "ACCESSION_NUMBER\tFILINGMANAGER_NAME\tCONFDENIEDEXPIRED\tDATEDENIEDEXPIRED\t"
+        "DATEREPORTED\tREASONFORNONCONFIDENTIALITY\nB1\tManager Two LLC\t\t\t\t\n"
+    )
 
     dest_dir = tmp_path / "raw"
     dest_dir.mkdir()
-    _write_zip(dest_dir / "ds1_form13f.zip", {"SUBMISSION.tsv": submission_tsv_1, "INFOTABLE.tsv": infotable_tsv_1})
-    _write_zip(dest_dir / "ds2_form13f.zip", {"SUBMISSION.tsv": submission_tsv_2, "INFOTABLE.tsv": infotable_tsv_2})
+    _write_zip(dest_dir / "ds1_form13f.zip", {
+        "SUBMISSION.tsv": submission_tsv_1, "INFOTABLE.tsv": infotable_tsv_1, "COVERPAGE.tsv": coverpage_tsv_1,
+    })
+    _write_zip(dest_dir / "ds2_form13f.zip", {
+        "SUBMISSION.tsv": submission_tsv_2, "INFOTABLE.tsv": infotable_tsv_2, "COVERPAGE.tsv": coverpage_tsv_2,
+    })
 
     panel = build_raw_panel(["ds1_form13f.zip", "ds2_form13f.zip"], dest_dir=dest_dir)
 
@@ -337,13 +445,67 @@ def test_build_raw_panel_drops_13f_nt_filings_with_no_holdings(tmp_path):
         "A2\t31-MAY-2013\t13F-NT\t2\t31-MAR-2013\n"
     )
     infotable_tsv = "ACCESSION_NUMBER\tCUSIP\tVALUE\tSSHPRNAMT\nA1\t037833100\t100\t10\n"
+    # NT filers still submit a cover page, even with no INFOTABLE rows.
+    coverpage_tsv = (
+        "ACCESSION_NUMBER\tFILINGMANAGER_NAME\tCONFDENIEDEXPIRED\tDATEDENIEDEXPIRED\t"
+        "DATEREPORTED\tREASONFORNONCONFIDENTIALITY\n"
+        "A1\tManager One LLC\t\t\t\t\n"
+        "A2\tManager Two LLC (NT)\t\t\t\t\n"
+    )
     dest_dir = tmp_path / "raw"
     dest_dir.mkdir()
-    _write_zip(dest_dir / "ds1_form13f.zip", {"SUBMISSION.tsv": submission_tsv, "INFOTABLE.tsv": infotable_tsv})
+    _write_zip(dest_dir / "ds1_form13f.zip", {
+        "SUBMISSION.tsv": submission_tsv, "INFOTABLE.tsv": infotable_tsv, "COVERPAGE.tsv": coverpage_tsv,
+    })
 
     panel = build_raw_panel(["ds1_form13f.zip"], dest_dir=dest_dir)
 
     assert panel["ACCESSION_NUMBER"].tolist() == ["A1"]
+
+
+def test_build_raw_panel_survives_missing_coverpage_row(tmp_path):
+    # A COVERPAGE parsing gap must never drop an otherwise-valid INFOTABLE
+    # holdings row -- the left join should surface NaN manager/confidentiality
+    # columns for A1, not remove A1 from the panel.
+    submission_tsv = _SAMPLE_SUBMISSION_TSV
+    infotable_tsv = _SAMPLE_INFOTABLE_TSV
+    # COVERPAGE has a row for a different accession only -- A1 gets nothing.
+    coverpage_tsv = (
+        "ACCESSION_NUMBER\tFILINGMANAGER_NAME\tCONFDENIEDEXPIRED\tDATEDENIEDEXPIRED\t"
+        "DATEREPORTED\tREASONFORNONCONFIDENTIALITY\nZ9\tSome Other Manager\t\t\t\t\n"
+    )
+    dest_dir = tmp_path / "raw"
+    dest_dir.mkdir()
+    _write_zip(dest_dir / "ds1_form13f.zip", {
+        "SUBMISSION.tsv": submission_tsv, "INFOTABLE.tsv": infotable_tsv, "COVERPAGE.tsv": coverpage_tsv,
+    })
+
+    panel = build_raw_panel(["ds1_form13f.zip"], dest_dir=dest_dir)
+
+    assert panel["ACCESSION_NUMBER"].tolist() == ["A1"]
+    assert pd.isna(panel.loc[0, "FILINGMANAGER_NAME"])
+    assert pd.isna(panel.loc[0, "CONFIDENTIAL_TREATMENT_FLAG"])
+
+
+def test_build_raw_panel_confidential_treatment_flag_flows_end_to_end(tmp_path):
+    submission_tsv = _SAMPLE_SUBMISSION_TSV
+    infotable_tsv = _SAMPLE_INFOTABLE_TSV
+    coverpage_tsv = (
+        "ACCESSION_NUMBER\tFILINGMANAGER_NAME\tCONFDENIEDEXPIRED\tDATEDENIEDEXPIRED\t"
+        "DATEREPORTED\tREASONFORNONCONFIDENTIALITY\n"
+        "A1\tAlyeska Investment Group, L.P.\tY\t04-MAR-2013\t14-NOV-2012\tConfidential Treatment Expired\n"
+    )
+    dest_dir = tmp_path / "raw"
+    dest_dir.mkdir()
+    _write_zip(dest_dir / "ds1_form13f.zip", {
+        "SUBMISSION.tsv": submission_tsv, "INFOTABLE.tsv": infotable_tsv, "COVERPAGE.tsv": coverpage_tsv,
+    })
+
+    panel = build_raw_panel(["ds1_form13f.zip"], dest_dir=dest_dir)
+
+    assert panel.loc[0, "FILINGMANAGER_NAME"] == "Alyeska Investment Group, L.P."
+    assert panel.loc[0, "CONFIDENTIAL_TREATMENT_FLAG"] == True
+    assert panel.loc[0, "REASONFORNONCONFIDENTIALITY"] == "Confidential Treatment Expired"
 
 
 def test_build_raw_panel_checkpoint_roundtrip_matches_direct_parse(tmp_path):
@@ -352,6 +514,7 @@ def test_build_raw_panel_checkpoint_roundtrip_matches_direct_parse(tmp_path):
     _write_zip(dest_dir / "ds1_form13f.zip", {
         "SUBMISSION.tsv": _SAMPLE_SUBMISSION_TSV,
         "INFOTABLE.tsv": _SAMPLE_INFOTABLE_TSV,
+        "COVERPAGE.tsv": _SAMPLE_COVERPAGE_TSV,
     })
     checkpoint_dir = tmp_path / "parts"
 
@@ -369,6 +532,7 @@ def test_build_raw_panel_checkpoint_dir_skips_reparsing_on_rerun(tmp_path, monke
     _write_zip(dest_dir / "ds1_form13f.zip", {
         "SUBMISSION.tsv": _SAMPLE_SUBMISSION_TSV,
         "INFOTABLE.tsv": _SAMPLE_INFOTABLE_TSV,
+        "COVERPAGE.tsv": _SAMPLE_COVERPAGE_TSV,
     })
     checkpoint_dir = tmp_path / "parts"
 
