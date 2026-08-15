@@ -4,7 +4,7 @@
 
 Per the pipeline design in `CLAUDE.md` (`ingest → pit → mapping → universe → factor → backtest → report`), Phase 1 covers the first two stages: **`src/ingest.py`** (pull raw 13F-HR data from SEC EDGAR) and **`src/pit.py`** (turn that raw data into point-in-time-correct snapshots). Everything downstream — CUSIP mapping, universe definition, factor construction, backtesting, reporting — is still a stub (`mapping.py`, `universe.py`, `factor.py`, `backtest.py`, `report.py` are all 0 lines). Phase 1's job was narrow and deliberate: get real data flowing end-to-end with **no lookahead bias**, since that's explicitly called out in the prompt as a primary evaluation criterion.
 
-Status: **complete**. 9/9 tests pass, validated against real SEC data (3.9M rows, 14,353 filings), and a full historical pull (`--full`, 806MB parquet) has already been run successfully.
+Status: **complete**, and hardened after a follow-up code review. 33/33 tests pass, validated against real SEC data (3.9M rows, 14,353 filings), and a full historical pull (`--full`, 806MB parquet) has already been run successfully. A subsequent review pass (commits `1915909` and `4b970c3`) fixed a reproducibility gap and six correctness/efficiency bugs, and grew the test suite from 9 to 33 tests — see [Post-review hardening](#post-review-hardening) below.
 
 ---
 
@@ -35,7 +35,7 @@ SEC changed its naming convention in 2024, from calendar-quarter buckets (`2013q
 
 ### CLI modes
 - Default: a 3-dataset **validation sample** (`2013q2`, `2015q1`, and one post-2024-naming dataset) — deliberately chosen to prove the pipeline handles both naming schemes end-to-end without downloading the entire archive.
-- `--full`: discovers and downloads every dataset currently listed on SEC's index (~55 zips, several GB). Explicitly documented as **not bit-for-bit reproducible** across runs, since re-running later picks up newly published quarters — an honest tradeoff rather than a false claim of determinism.
+- `--full`: discovers and downloads every dataset currently listed on SEC's index (~55 zips, several GB). Explicitly documented as **not bit-for-bit reproducible** across runs, since re-running later picks up newly published quarters — an honest tradeoff rather than a false claim of determinism. Since the review pass, `--full` also checkpoints each dataset's parsed frame to `data/processed/13f_panel_parts/` as it goes, so a crash partway through doesn't force re-parsing everything already done (see [Post-review hardening](#post-review-hardening)).
 
 ---
 
@@ -60,14 +60,16 @@ For a given `(CIK, PERIODOFREPORT)`, the holdings "known" as of some `as_of_date
 
 ## Test coverage
 
-9 tests, all passing:
+33 tests, all passing (grown from an initial 9 — see [Post-review hardening](#post-review-hardening)):
 
 | File | Tests | What's verified |
 |---|---|---|
-| `test_ingest.py` | 3 | voting-authority-split dedup arithmetic; SEC date-format parsing + CIK whitespace stripping; flat vs. nested ZIP layouts both parse correctly |
-| `test_pit.py` | 6 | amendment after `as_of_date` is ignored; amendment on/before `as_of_date` supersedes; late filer stays absent (no backfill); same-day tie-break by accession; `breadth()` counts and exclusions; empty result when nothing is known yet |
+| `test_ingest.py` | 22 | voting-authority-split dedup arithmetic, incl. partial- and all-NaN groups; CUSIP case/whitespace normalization; SEC date-format parsing + CIK whitespace stripping; extra input columns dropped; flat vs. nested vs. case-varied ZIP layouts all parse correctly; `usecols` restriction; relative/absolute href resolution and de-duplication in `list_datasets`; `download_dataset` caching, `force=True`, atomic writes, and no leftover file on a failed request; `build_raw_panel` dedup across overlapping datasets without conflating distinct filings, 13F-NT drop-out, checkpoint round-trip fidelity and re-parse skipping; `main()` CLI wiring for both `--full` and default modes |
+| `test_pit.py` | 11 | amendment after `as_of_date` is ignored; amendment on/before `as_of_date` supersedes, including across 3+ amendments; late filer stays absent (no backfill); a snapshot for one reporting period never leaks another period's holdings; same-day tie-break by accession; `breadth()` counts, exclusions, a CUSIP dropping out entirely when all its filers are excluded, and independent counts across multiple CUSIPs; empty result when nothing is known yet |
 
 The `pit.py` tests use small synthetic fixtures rather than real data — appropriate here, since the property being tested (no-lookahead) is a logic guarantee that's actually *easier* to verify precisely with hand-constructed edge cases than by eyeballing real filings.
+
+One fixture in the expanded suite (`test_breadth_computes_independently_across_multiple_cusips`) initially failed — not because of a `pit.py` bug, but because the fixture put a single CIK's two CUSIP holdings under two different accession numbers on the same day. `_winning_accessions` correctly read that as an amendment pair and treated the second as superseding the first, exactly as designed. The fix was in the test, not the code: a real 13F filing reports every CUSIP a manager holds under one accession number, so the fixture was rewritten to match that. Worth noting as a small proof point that the no-lookahead/amendment logic is doing what it's supposed to, including in cases the test author didn't initially expect.
 
 ## Validation against real data
 
@@ -79,6 +81,26 @@ The default (non-`--full`) run pulled 3 real SEC datasets spanning both naming e
 - 3,538,571 original `13F-HR` rows vs. 329,454 `13F-HR/A` amendment rows (~8.5% of volume is amendments — non-trivial, which is why the amendment-handling logic in `pit.py` isn't a corner case to skip)
 
 A `--full` run has also already been executed, producing an 806MB `data/processed/13f_panel_full.parquet` covering the entire SEC-published archive — confirming the scraping-based dataset discovery works unattended across the full history, not just the 3-file validation sample.
+
+---
+
+## Post-review hardening
+
+After the initial implementation, a targeted code review (effort: high, scoped to `ingest.py` + `pit.py` + reproducibility) found one reproducibility gap and six correctness/efficiency issues. All seven were fixed, verified with a fresh venv rebuild and a real SEC download, and covered by new tests. Two commits:
+
+**`1915909` — reproducibility.**
+- `requirements.txt` was fully unpinned. A fresh `pip install` on review day had already pulled pandas 3.0.5 and numpy 2.5.2 — major versions with breaking API changes relative to the 2.x/1.x lines the code was originally written against. Pinned every dependency to the exact versions validated in this environment, so `./setup.sh` on a fresh clone reproduces the same environment rather than whatever is newest at install time.
+- `src/pit.py` uses PEP 604 union syntax (`set | None`), which requires Python ≥3.10, but nothing in the repo declared or enforced that floor. On an older interpreter (still common on some CI base images), `./setup.sh` would succeed and then `pytest` / `python -m src.ingest` would fail at import with a cryptic `TypeError`. `setup.sh` now checks the interpreter version up front and exits with a clear message before doing anything else; `pyproject.toml` also declares `requires-python = ">=3.10"` for tooling to pick up.
+
+**`4b970c3` — correctness and efficiency, all in `src/ingest.py`:**
+1. **Silent zero on bad data.** `_clean_infotable`'s groupby-sum treated an entirely-malformed `VALUE`/`SSHPRNAMT` group as `0` (pandas' default `sum` behavior on an all-NaN group), indistinguishable from a real zero position. Switched to `sum(min_count=1)` so a data-quality failure surfaces as `NaN`, not a fake zero that a later value-weighted factor would silently trust.
+2. **Non-atomic downloads.** `download_dataset` treated `dest.exists()` as proof of a complete file. An interrupted download (kill, OOM, disk full) could leave a truncated zip that every future run would treat as a valid cache hit and then crash on with `zipfile.BadZipFile`. Now writes to a `.part` temp file and renames atomically into place, so a file only ever exists at its final path once it's fully written.
+3. **No dedup across dataset boundaries.** `build_raw_panel` concatenated per-dataset frames with no final dedup. If a filing ever landed in two datasets at the 2024 naming-scheme transition (calendar-quarter buckets → rolling 3-month windows), it would be double-counted. Added a `drop_duplicates(subset=["ACCESSION_NUMBER", "CUSIP"])` after the concat.
+4. **Hardcoded URL undermining the scraping it was meant to replace.** `list_datasets` scraped real filenames specifically because SEC's URL layout isn't a stable template — but `download_dataset` then discarded the scraped href and rebuilt the URL from a separately hardcoded `SEC_FILE_BASE`, reintroducing the exact assumption the scraping existed to avoid. `list_datasets` now returns fully-resolved URLs (via `urljoin`), and `download_dataset` uses them directly.
+5. **Unused columns parsed at full scale.** `parse_dataset` read every column of `SUBMISSION`/`INFOTABLE` as `dtype=str`, even though only 5 and 4 columns respectively are ever used downstream. Added `usecols` to drop the rest (`NAMEOFISSUER`, `FIGI`, the voting-authority split columns, etc.) at read time — meaningful at `--full` scale (~55 zips, an 806MB output).
+6. **No checkpointing in `--full` mode.** A crash on, say, dataset 54 of 55 meant re-parsing all 54 already-done datasets on the next run (downloads were cached, but parsed results weren't persisted). `build_raw_panel` gained an optional `checkpoint_dir`, wired into `--full` mode, that persists each dataset's parsed+merged frame as its own parquet.
+
+All fixes were verified by rerunning the full test suite (33/33 pass) and, separately, by re-running `list_datasets()` / `download_dataset()` against the live SEC site to confirm the URL-resolution change still works against real data.
 
 ---
 
