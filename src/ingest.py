@@ -64,10 +64,16 @@ def download_dataset(filename: str, dest_dir: Path = RAW_DIR, *, force: bool = F
 
 
 def parse_dataset(zip_path: Path) -> dict[str, pd.DataFrame]:
-    """Parse the SUBMISSION and INFOTABLE tables out of a dataset ZIP."""
+    """Parse the SUBMISSION and INFOTABLE tables out of a dataset ZIP.
+
+    Most datasets store the TSVs at the zip root, but at least one observed
+    dataset (01jun2025-31aug2025) nests them under a subfolder instead
+    (`01JUN2025-31AUG2025_form13f/SUBMISSION.tsv`) -- match on basename, not
+    exact path, to be robust to that inconsistency.
+    """
     tables = {}
     with zipfile.ZipFile(zip_path) as zf:
-        members = {name.upper(): name for name in zf.namelist()}
+        members = {name.rsplit("/", 1)[-1].upper(): name for name in zf.namelist()}
         for table in ("SUBMISSION", "INFOTABLE"):
             member = members[f"{table}.TSV"]
             with zf.open(member) as fh:
