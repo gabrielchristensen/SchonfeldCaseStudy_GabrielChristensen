@@ -11,6 +11,7 @@ from src.ingest import (
     _clean_coverpage,
     _clean_infotable,
     _clean_submission,
+    _dedupe_combined_parquet,
     build_raw_panel,
     download_dataset,
     list_datasets,
@@ -678,6 +679,81 @@ def test_build_raw_panel_with_checkpoint_dir_streams_each_dataset_to_disk(tmp_pa
     # The streaming combine buffer must not survive a successful run -- a
     # leftover file would otherwise risk being mistaken for a complete one.
     assert not combined_path.exists()
+
+
+def test_build_raw_panel_with_checkpoint_dir_dedups_across_dataset_boundary(tmp_path):
+    # Same scenario as test_build_raw_panel_dedups_filing_that_appears_in_two_datasets,
+    # but through the checkpoint_dir/streaming-combine path -- the dedup logic
+    # changed shape (mask-then-restream instead of read-then-drop_duplicates)
+    # when the OOM fix was pushed further, so correctness needs its own
+    # regression test on that path specifically.
+    dest_dir = tmp_path / "raw"
+    dest_dir.mkdir()
+    for name in ("ds1_form13f.zip", "ds2_form13f.zip"):
+        _write_zip(dest_dir / name, {
+            "SUBMISSION.tsv": _SAMPLE_SUBMISSION_TSV,
+            "INFOTABLE.tsv": _SAMPLE_INFOTABLE_TSV,
+            "COVERPAGE.tsv": _SAMPLE_COVERPAGE_TSV,
+        })
+
+    panel = build_raw_panel(
+        ["ds1_form13f.zip", "ds2_form13f.zip"], dest_dir=dest_dir, checkpoint_dir=tmp_path / "parts",
+    )
+
+    assert len(panel) == 1
+
+
+def test_build_raw_panel_with_checkpoint_dir_leaves_no_temp_files_behind(tmp_path):
+    dest_dir = tmp_path / "raw"
+    dest_dir.mkdir()
+    _write_zip(dest_dir / "ds1_form13f.zip", {
+        "SUBMISSION.tsv": _SAMPLE_SUBMISSION_TSV,
+        "INFOTABLE.tsv": _SAMPLE_INFOTABLE_TSV,
+        "COVERPAGE.tsv": _SAMPLE_COVERPAGE_TSV,
+    })
+    checkpoint_dir = tmp_path / "parts"
+
+    build_raw_panel(["ds1_form13f.zip"], dest_dir=dest_dir, checkpoint_dir=checkpoint_dir)
+
+    assert not (checkpoint_dir / "_combined_raw.parquet").exists()
+    assert not (checkpoint_dir / "_combined_raw_deduped.parquet").exists()
+
+
+def test_dedupe_combined_parquet_keeps_first_occurrence_across_batch_boundary(tmp_path):
+    # Regression test for the offset/slicing arithmetic in
+    # _dedupe_combined_parquet: force a tiny batch_size so the duplicate pair
+    # (rows 1 and 3) is split across three separate batches, and confirm the
+    # keep-mask is still applied against the correct absolute row, not
+    # re-zeroed per batch.
+    combined_path = tmp_path / "_combined_raw.parquet"
+    df = pd.DataFrame({
+        "ACCESSION_NUMBER": ["A1", "A2", "A1", "A3"],
+        "CUSIP": ["037833100", "037833100", "037833100", "88579Y101"],
+        "VALUE": [100, 200, 999, 300],  # A1/037833100's second occurrence -- must be the one dropped
+    })
+    df.to_parquet(combined_path)
+
+    result = _dedupe_combined_parquet(combined_path, batch_size=1)
+
+    assert sorted(result["ACCESSION_NUMBER"].tolist()) == ["A1", "A2", "A3"]
+    kept_a1 = result[result["ACCESSION_NUMBER"] == "A1"].iloc[0]
+    assert kept_a1["VALUE"] == 100  # first occurrence kept, not the later duplicate
+    assert not (tmp_path / "_combined_raw_deduped.parquet").exists()
+
+
+def test_dedupe_combined_parquet_no_duplicates_returns_all_rows_unchanged(tmp_path):
+    combined_path = tmp_path / "_combined_raw.parquet"
+    df = pd.DataFrame({
+        "ACCESSION_NUMBER": ["A1", "A2", "A3"],
+        "CUSIP": ["037833100", "88579Y101", "594918104"],
+        "VALUE": [100, 200, 300],
+    })
+    df.to_parquet(combined_path)
+
+    result = _dedupe_combined_parquet(combined_path, batch_size=2)
+
+    assert len(result) == 3
+    assert sorted(result["VALUE"].tolist()) == [100, 200, 300]
 
 
 def test_build_raw_panel_checkpoint_dir_skips_reparsing_on_rerun(tmp_path, monkeypatch):

@@ -243,6 +243,66 @@ def _clean_infotable(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+_DEDUP_SUBSET = ["ACCESSION_NUMBER", "CUSIP"]
+
+
+def _dedupe_combined_parquet(combined_path: Path, batch_size: int = 500_000) -> pd.DataFrame:
+    """Dedup a combined-but-not-yet-deduped parquet file on `_DEDUP_SUBSET`
+    (keep='first'), without ever holding two full-width copies of the panel
+    in memory at once the way `pd.read_parquet(...).drop_duplicates()` does.
+
+    Two passes over `combined_path`, neither of which allocates a full-width
+    frame:
+      1. Read *only* the two dedup-key columns (a small fraction of the
+         panel's real width -- VALUE, dates, FILINGMANAGER_NAME etc. are all
+         skipped) and compute a boolean keep-mask with pandas' own
+         `duplicated(keep="first")`, matching the semantics of the previous
+         whole-frame `.drop_duplicates()` exactly, including tie-break order
+         (dataset processing order is preserved on disk, row group by row
+         group, so "first occurrence" means the same thing here as it did
+         under `pd.concat`).
+      2. Re-stream the file row-group batch by batch, slicing the
+         precomputed mask per batch and writing only kept rows into a second
+         parquet file via `ParquetWriter` -- peak memory here is one batch,
+         not the whole panel.
+
+    The final `pd.read_parquet` on the now-deduped file is the one
+    full-panel-sized allocation this function can't avoid, since the caller
+    needs a real DataFrame back -- but it's a single allocation, not stacked
+    on top of a second one the way the old read-then-drop_duplicates path
+    was.
+    """
+    keys = pd.read_parquet(combined_path, columns=_DEDUP_SUBSET)
+    keep_mask = (~keys.duplicated(subset=_DEDUP_SUBSET, keep="first")).to_numpy()
+    del keys
+
+    deduped_path = combined_path.with_name(combined_path.stem + "_deduped.parquet")
+    deduped_path.unlink(missing_ok=True)
+    writer = None
+    offset = 0
+    for batch in pq.ParquetFile(combined_path).iter_batches(batch_size=batch_size):
+        n = batch.num_rows
+        mask_slice = keep_mask[offset:offset + n]
+        offset += n
+        table = pa.Table.from_batches([batch])
+        if not mask_slice.all():
+            table = table.filter(pa.array(mask_slice))
+        if table.num_rows == 0:
+            continue
+        if writer is None:
+            writer = pq.ParquetWriter(deduped_path, table.schema)
+        writer.write_table(table)
+
+    if writer is not None:
+        writer.close()
+        panel = pd.read_parquet(deduped_path)
+        deduped_path.unlink()
+    else:
+        # Degenerate case: combined_path had zero rows to begin with.
+        panel = pd.read_parquet(combined_path)
+    return panel.reset_index(drop=True)
+
+
 def build_raw_panel(
     filenames: list[str], dest_dir: Path = RAW_DIR, *, checkpoint_dir: Path | None = None
 ) -> pd.DataFrame:
@@ -273,7 +333,11 @@ def build_raw_panel(
     periods, but the naming scheme changed in 2024 (calendar-quarter
     buckets -> rolling 3-month windows); the final dedup on
     (ACCESSION_NUMBER, CUSIP) guards against double-counting a filing that
-    ends up represented in two datasets at that boundary.
+    ends up represented in two datasets at that boundary. With
+    `checkpoint_dir` set, that dedup itself is also streaming --
+    `_dedupe_combined_parquet` -- rather than a `pd.read_parquet(...)
+    .drop_duplicates()` pair that would reintroduce a second full-size
+    allocation right where the original OOM happened.
     """
     n = len(filenames)
     frames = []
@@ -324,11 +388,11 @@ def build_raw_panel(
         writer.close()
 
     if combined_path is not None:
-        panel = pd.read_parquet(combined_path)
+        panel = _dedupe_combined_parquet(combined_path)
         combined_path.unlink()
-    else:
-        panel = pd.concat(frames, ignore_index=True) #concat to one file
-    return panel.drop_duplicates(subset=["ACCESSION_NUMBER", "CUSIP"]).reset_index(drop=True) #remove duplicates
+        return panel
+    panel = pd.concat(frames, ignore_index=True) #concat to one file
+    return panel.drop_duplicates(subset=_DEDUP_SUBSET).reset_index(drop=True) #remove duplicates
 
 
 def main() -> None:

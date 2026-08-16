@@ -1424,6 +1424,58 @@ produced the reported symptom (the list-accumulation-then-concat
 pattern) plus the full existing `build_raw_panel` test suite, not by
 reproducing the OOM directly.
 
+**Follow-up: the final dedup pass was still a second full-panel
+allocation**. The fix above collapsed the per-dataset combine loop's peak
+memory to one dataset at a time, but its own final step —
+`pd.read_parquet(combined_path)` immediately followed by
+`.drop_duplicates()` — still materialized the *entire* combined panel as
+one pandas DataFrame and then let `drop_duplicates()` allocate a second,
+equally large one on top of it before the first could be freed. That's a
+real improvement (3 stacked full-size allocations down to 2), but it
+left the exact same class of allocation, just smaller, sitting at the
+exact place the original OOM was reported — a real risk if the crash
+occurred with less than ~2x the panel's size in headroom.
+
+Replaced that tail with `_dedupe_combined_parquet`, a two-pass streaming
+dedup that never holds a full-width copy of the panel except once, for
+the unavoidable final return value:
+1. Read *only* the two dedup-key columns (`ACCESSION_NUMBER`, `CUSIP`)
+   from the combined file — a small fraction of the panel's real width,
+   since `VALUE`, both dates, and `FILINGMANAGER_NAME` are skipped — and
+   compute a boolean keep-mask with pandas' own
+   `duplicated(keep="first")`. Dataset processing order is preserved on
+   disk row-group by row-group, so "first occurrence" means exactly what
+   it meant under the old `pd.concat`-then-`drop_duplicates` path.
+2. Re-stream the combined file row-group batch by batch (default
+   `batch_size=500_000`), slicing the precomputed mask per batch and
+   writing only kept rows into a second parquet file via
+   `ParquetWriter`. Peak memory here is one batch, not the whole panel.
+3. Read the now-deduped file back once — the function's one genuinely
+   unavoidable full-panel-sized allocation, since `build_raw_panel` has
+   to return a real DataFrame — and delete both temp files.
+
+Net effect: the checkpoint-dir combine path's peak memory drops from
+~2x panel size to ~1x (plus one small key-columns-only frame and one
+bounded batch, both negligible next to the full panel).
+
+**Verified**: `test_dedupe_combined_parquet_keeps_first_occurrence_across_batch_boundary`
+forces `batch_size=1` against a 4-row fixture where the duplicate pair
+spans three separate batches, confirming the mask-slice offset arithmetic
+stays correct across batch boundaries rather than silently re-zeroing per
+batch (this is the kind of off-by-one that unit tests at realistic batch
+sizes would never catch).
+`test_build_raw_panel_with_checkpoint_dir_dedups_across_dataset_boundary`
+re-runs the existing cross-dataset-boundary dedup scenario specifically
+through the checkpoint_dir/streaming path, since the dedup logic there is
+now genuinely different code from the small-sample path.
+`test_build_raw_panel_with_checkpoint_dir_leaves_no_temp_files_behind`
+confirms both `_combined_raw.parquet` and the new
+`_combined_raw_deduped.parquet` are cleaned up after a successful run.
+168/168 tests pass. Same caveat as above still applies: not yet verified
+against a real `--full` 55-dataset run in this environment — the
+streaming design targets the specific 2x-allocation risk identified by
+re-reading the code after the first fix, not a re-observed crash.
+
 ---
 
 ## 3. Defense Quick-Reference Index
