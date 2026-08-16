@@ -18,6 +18,7 @@ correct by construction, since it's built entirely on pit.breadth()'s
 existing no-lookahead guarantee without modifying it.
 """
 
+import functools
 import io
 from pathlib import Path
 
@@ -48,7 +49,7 @@ def build_sp500_history(
     shape. No network needed at pipeline runtime after this runs once.
     """
     resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30)
-    resp.raise_for_status()
+    resp.raise_for_status() #Throw exception if status error code
     history = pd.read_csv(io.StringIO(resp.text))
     history["date"] = pd.to_datetime(history["date"])
     history = history[history["date"] >= pd.Timestamp(start_date)].reset_index(drop=True)
@@ -63,16 +64,61 @@ def build_sp500_history(
     return history
 
 
+@functools.lru_cache(maxsize=1)
+def _load_sp500_history(history_path: Path) -> pd.DataFrame:
+    """Cached read+parse of sp500_history.csv, keyed only on history_path
+    (a Path -- hashable, unlike the `mapping` DataFrame sp500_members also
+    takes, which is why this is split out as its own cached helper rather
+    than caching sp500_members directly). The file is immutable within a
+    single run, but sp500_members was re-reading and re-parsing it from
+    disk on every one of the ~300+ calls a full backtest grid makes.
+
+    Returns a shared object across every caller -- treat as read-only,
+    never mutate in place.
+    """
+    history = pd.read_csv(history_path)
+    history["date"] = pd.to_datetime(history["date"])
+    return history
+
+
+def build_ticker_to_cusip(mapping: pd.DataFrame) -> pd.Series:
+    """Reverse ticker -> CUSIP lookup (Series indexed by TICKER) built from
+    `mapping` (mapping.load_cusip_ticker_map()'s output). Ticker->CUSIP
+    collisions (distinct tickers occasionally resolving to the same CUSIP,
+    e.g. share class noise) are resolved deterministically (sorted, first
+    wins).
+
+    Pulled out of sp500_members() so callers that invoke it repeatedly
+    (e.g. backtest.py's ~300+-call grid) can build this once and pass it
+    in via sp500_members'/sp500_universe_breadth's `ticker_to_cusip`
+    parameter, instead of rebuilding it from `mapping` on every call --
+    `mapping` is a DataFrame, and thus unhashable, so this can't just be
+    wrapped in functools.lru_cache the way _load_sp500_history is.
+    """
+    return (
+        mapping.dropna(subset=["TICKER"])
+        .sort_values("CUSIP")
+        .drop_duplicates(subset="TICKER", keep="first")
+        .set_index("TICKER")["CUSIP"]
+    )
+
+
 def sp500_members(
-    as_of_date, mapping: pd.DataFrame, *, history_path: Path = DEFAULT_HISTORY_PATH
+    as_of_date,
+    mapping: pd.DataFrame,
+    *,
+    history_path: Path = DEFAULT_HISTORY_PATH,
+    ticker_to_cusip: pd.Series | None = None,
 ) -> set[str]:
     """S&P 500 member CUSIPs as of as_of_date.
 
     Takes the last row of sp500_history.csv with date <= as_of_date
     (cumulative-snapshot format, not a delta -- confirmed against the real
     upstream file), comma-splits the ticker list, and reverse-maps
-    ticker -> CUSIP through `mapping` (the DataFrame from
-    mapping.load_cusip_ticker_map()).
+    ticker -> CUSIP through `ticker_to_cusip` (built from `mapping` via
+    build_ticker_to_cusip() if not supplied -- see that function's
+    docstring for why a caller making many calls should build it once and
+    pass it in instead).
 
     Deliberate, disclosed design choice: keyed on as_of_date (the
     point-in-time trade/decision date), not period_of_report -- consistent
@@ -88,8 +134,7 @@ def sp500_members(
     separately.
     """
     as_of_date = pd.Timestamp(as_of_date)
-    history = pd.read_csv(history_path)
-    history["date"] = pd.to_datetime(history["date"])
+    history = _load_sp500_history(history_path)
     eligible = history[history["date"] <= as_of_date]
     if eligible.empty:
         raise ValueError(
@@ -99,12 +144,8 @@ def sp500_members(
     row = eligible.iloc[-1]
     tickers = sorted(t.strip() for t in row["tickers"].split(","))
 
-    ticker_to_cusip = (
-        mapping.dropna(subset=["TICKER"])
-        .sort_values("CUSIP")
-        .drop_duplicates(subset="TICKER", keep="first")
-        .set_index("TICKER")["CUSIP"]
-    )
+    if ticker_to_cusip is None:
+        ticker_to_cusip = build_ticker_to_cusip(mapping)
     cusips = {ticker_to_cusip[t] for t in tickers if t in ticker_to_cusip.index}
     return cusips
 
@@ -125,13 +166,16 @@ def sp500_universe_breadth(
     *,
     passive_ciks: set[str] | None = None,
     history_path: Path = DEFAULT_HISTORY_PATH,
+    ticker_to_cusip: pd.Series | None = None,
 ) -> pd.DataFrame:
     """Point-in-time breadth, restricted to the S&P 500 universe as of
     as_of_date, with passive managers excluded. Exact [CUSIP, breadth] shape
-    factor.py consumes.
+    factor.py consumes. Note that passive_ciks is an optional parameter.
     """
     raw = pit.breadth(panel, period_of_report, as_of_date, exclude_ciks=passive_ciks)
-    universe = sp500_members(as_of_date, mapping, history_path=history_path)
+    universe = sp500_members(
+        as_of_date, mapping, history_path=history_path, ticker_to_cusip=ticker_to_cusip,
+    )
     return raw[raw["CUSIP"].isin(universe)].reset_index(drop=True)
 
 

@@ -72,7 +72,7 @@ def _headers(api_key: str | None) -> dict:
     return headers
 
 
-def _choose_primary_listing(data: list[dict]) -> dict:
+def _choose_primary_listing(data: list[dict]) -> dict: #data is the response returned by figi
     """Pick the single primary US listing out of a CUSIP query's many results.
 
     Originally filtered to exchCode == "US", but that's not universal --
@@ -90,12 +90,12 @@ def _choose_primary_listing(data: list[dict]) -> dict:
     far the largest group anyway) and correctly picks "XOM" (3-row group)
     over "EXMOC" (2-row group) for the CUSIP above.
     """
-    equity_rows = [r for r in data if r.get("marketSector") == "Equity" and r.get("securityType2") == "Common Stock"]
-    candidates = equity_rows or data
+    equity_rows = [r for r in data if r.get("marketSector") == "Equity" and r.get("securityType2") == "Common Stock"] #ignore preferred shares (not in S&P)
+    candidates = equity_rows or data #avoids getting empty list
     groups: dict[str, list[dict]] = {}
     for row in candidates:
-        groups.setdefault(row.get("compositeFIGI"), []).append(row)
-    best_figi = max(groups, key=lambda figi: len(groups[figi]))
+        groups.setdefault(row.get("compositeFIGI"), []).append(row) #get() to avoid KeyError
+    best_figi = max(groups, key=lambda figi: len(groups[figi])) #US has more fragments (NYSE, NASDAQ, BATS, NYSE ARCA, IEX)
     group = groups[best_figi]
     us_row = next((r for r in group if r.get("exchCode") == "US"), None)
     return us_row or group[0]
@@ -109,7 +109,6 @@ def fetch_openfigi_mappings(
 ) -> pd.DataFrame:
     """POST to OpenFIGI's mapping endpoint in batches (idType=ID_CUSIP) --
     10 jobs/request unauthenticated, 100 with a registered API key.
-
     Returns one row per input CUSIP: [CUSIP, TICKER, NAME, RESOLVED]. A CUSIP
     OpenFIGI can't resolve (delisted, private placement, malformed) gets
     RESOLVED=False with TICKER/NAME left null -- never silently dropped from
@@ -133,29 +132,29 @@ def fetch_openfigi_mappings(
     # whole column to object -- `~` on an object array of Python bools then
     # does bitwise-invert (True -> -2, False -> -1) instead of logical NOT,
     # which pandas then tries to use as integer *column labels* rather than
-    # a boolean mask. Hit this for real on a fresh (no-checkpoint) run.
+    # a boolean mask. 
     already = pd.DataFrame({
         "CUSIP": pd.Series(dtype=str), "TICKER": pd.Series(dtype=str),
         "NAME": pd.Series(dtype=str), "RESOLVED": pd.Series(dtype=bool),
-    })
+    }) #Creates schema for df (EMPTY DF)
     if checkpoint_path is not None and checkpoint_path.exists():
         already = pd.read_csv(checkpoint_path, dtype={"CUSIP": str})
-        already["RESOLVED"] = already["RESOLVED"].astype(bool)
-    done = set(already["CUSIP"])
+        already["RESOLVED"] = already["RESOLVED"].astype(bool) #The CSV format itself does not preserve pandas' rich dtype metadata in the same way as Parquet.
+    done = set(already["CUSIP"]) #Already done CUSIPs
     remaining = [c for c in cusips if c not in done]
 
     headers = _headers(api_key)
     batch_size = _BATCH_SIZE_AUTHENTICATED if api_key else _BATCH_SIZE_UNAUTHENTICATED
-    new_rows = []
+    new_rows = [] #Results from the current run
     for i in range(0, len(remaining), batch_size):
-        batch = remaining[i : i + batch_size]
-        jobs = [{"idType": "ID_CUSIP", "idValue": c} for c in batch]
+        batch = remaining[i : i + batch_size] #Slicing doesnt throw "Out of Index Error"
+        jobs = [{"idType": "ID_CUSIP", "idValue": c} for c in batch] #Indicates CUSIP type 
         resp = _post_with_retry(headers, jobs)
         results = resp.json()
         batch_rows = []
         for cusip, job in zip(batch, results):
             data = job.get("data")
-            if not data:
+            if not data: #If FIGI does not return a mapping for this CUSIP
                 batch_rows.append({"CUSIP": cusip, "TICKER": None, "NAME": None, "RESOLVED": False})
                 continue
             chosen = _choose_primary_listing(data)
@@ -165,21 +164,21 @@ def fetch_openfigi_mappings(
                 "NAME": chosen.get("name"),
                 "RESOLVED": True,
             })
-        new_rows.extend(batch_rows)
-        if checkpoint_path is not None:
-            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        new_rows.extend(batch_rows) #concat results of the batch with previous one
+        if checkpoint_path is not None: #Saves every batch if checkpoint
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True) #ensures that the parent folder exists, else create
             pd.DataFrame(batch_rows, columns=_RESULT_COLUMNS).to_csv(
                 checkpoint_path, mode="a", header=not checkpoint_path.exists(), index=False
-            )
-        if i + batch_size < len(remaining):
+            ) #mode=a means append instead of overwwriting it, the header keyword makes sure the header isnt duplicated in df
+        if i + batch_size < len(remaining): #rate limit
             time.sleep(2.5 if not api_key else 0.3)
     new_df = pd.DataFrame(new_rows, columns=_RESULT_COLUMNS)
     combined = pd.concat([already, new_df], ignore_index=True)[_RESULT_COLUMNS]
-    # Defensive, not redundant: even with explicit dtypes above, concat can
+    # Defensive, not redundant: even with explicit dtypes above, concat can 
     # still demote RESOLVED to object in edge cases -- this guarantees the
     # caller always gets a real boolean column, not a footgun.
     combined["RESOLVED"] = combined["RESOLVED"].astype(bool)
-    return combined
+    return combined #One output row per input CUSIP [CUSIP, TICKER, NAME, RESOLVED]
 
 
 def _post_with_retry(headers: dict, jobs: list[dict], max_attempts: int = 5):
@@ -234,7 +233,7 @@ def sp500_ticker_coverage(mapping_df: pd.DataFrame, sp500_history_path: Path) ->
         "missing_tickers": missing,
     }
 
-
+#Maestro that return the solved mapping CUSIP, TICKER, NAME
 def build_cusip_ticker_map(
     panel_path: Path,
     *,
@@ -255,7 +254,7 @@ def build_cusip_ticker_map(
     working state, not a committed reference table) so a re-run after a
     transient network failure resumes instead of re-querying from scratch."""
     panel = pd.read_parquet(panel_path, columns=["CUSIP", "CIK", "FILING_DATE"])
-    candidates = sorted(candidate_cusips(panel, start_date=start_date, end_date=end_date, min_breadth=min_breadth))
+    candidates = sorted(candidate_cusips(panel, start_date=start_date, end_date=end_date, min_breadth=min_breadth)) #sorted for reproducibility
     print(f"{len(candidates):,} candidate CUSIPs (min_breadth={min_breadth}) out of "
           f"{panel['CUSIP'].nunique():,} distinct CUSIPs in the panel")
 
@@ -320,12 +319,28 @@ def cusip_to_ticker(cusips: pd.Series, mapping: pd.DataFrame) -> pd.Series:
 
     Forward (CUSIP -> ticker) lookup wants exactly one canonical answer per
     CUSIP, unlike sp500_members()'s reverse ticker -> CUSIP direction, which
-    deliberately allows multiple ticker aliases per CUSIP (see
-    load_cusip_ticker_map) -- dedup defensively here (keep="last", so a
-    cusip_overrides.csv alias row wins over the base map's row for the same
-    CUSIP) rather than let a non-unique index silently break .map().
+    deliberately allows multiple ticker aliases per CUSIP for a company that
+    renamed mid-window (see load_cusip_ticker_map) -- one row for its current
+    ticker, one for the retired label older S&P 500 membership rows still
+    use. This forward direction needs exactly one answer, so it dedupes down
+    to a single row per CUSIP.
+
+    keep="first", not "last": by the time this runs, load_cusip_ticker_map
+    has already dropped the base map's row for any CUSIP an override covers,
+    so base-vs-override is never actually the tie being broken here (that
+    conflict is resolved upstream) -- the real tie is between a renamed
+    company's two override rows (e.g. CUSIP 30303M102: "META" then "FB";
+    064058100: "BNY" then "BK"), which cusip_overrides.csv's own authored
+    convention always lists current-ticker-first. keep="first" picks that
+    current ticker. Verified empirically against real Yahoo Finance data
+    (2026-08-15) that this matters for more than tidiness: neither "FB" nor
+    "BK" resolves to *any* price data any more (Yahoo does not keep
+    historical prices addressable under a retired post-rename ticker) --
+    the old keep="last" behavior would have silently resolved both of these
+    still-current, large-cap S&P 500 constituents to a ticker with zero
+    price history, dropping them from every quarter's tradable universe.
     """
-    lookup = mapping.drop_duplicates(subset="CUSIP", keep="last").set_index("CUSIP")["TICKER"]
+    lookup = mapping.drop_duplicates(subset="CUSIP", keep="first").set_index("CUSIP")["TICKER"]
     return cusips.map(lookup)
 
 

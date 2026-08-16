@@ -6,3 +6,4 @@ jupyter==1.1.1
 pytest==9.1.1
 requests==2.34.2
 pyarrow==25.0.1
+yfinance==1.6.0

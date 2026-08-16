@@ -343,6 +343,24 @@ def test_cusip_to_ticker_maps_known_and_nan_for_unknown():
     assert pd.isna(result.iloc[1])
 
 
+def test_cusip_to_ticker_prefers_current_ticker_over_retired_alias():
+    # Mirrors cusip_overrides.csv's real, authored row order for a renamed
+    # company: current ticker listed first, retired pre-rename alias second
+    # (needed by sp500_members() for historical membership-row matching).
+    # cusip_to_ticker must resolve to the current ticker, not whichever row
+    # happens to sort last -- verified against real Yahoo Finance data that
+    # a retired post-rename ticker like "FB" or "BK" has zero price history.
+    mapping = pd.DataFrame({
+        "CUSIP": ["30303M102", "30303M102"],
+        "TICKER": ["META", "FB"],
+        "NAME": ["META PLATFORMS INC", "FACEBOOK INC"],
+    })
+
+    result = cusip_to_ticker(pd.Series(["30303M102"]), mapping)
+
+    assert result.iloc[0] == "META"
+
+
 def test_unmapped_summary_counts_and_lists_top_unmapped():
     mapping = pd.DataFrame({"CUSIP": ["037833100"], "TICKER": ["AAPL"], "NAME": ["APPLE INC"]})
     cusips = pd.Series(["037833100", "999999999", "999999999", "888888888"])

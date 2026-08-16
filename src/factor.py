@@ -63,6 +63,7 @@ def breadth_change(
     *,
     passive_ciks: set[str] | None = None,
     history_path: Path = universe.DEFAULT_HISTORY_PATH,
+    ticker_to_cusip: pd.Series | None = None,
 ) -> pd.DataFrame:
     """Un-standardized breadth change: [CUSIP, breadth, breadth_prior, raw_change].
 
@@ -76,11 +77,11 @@ def breadth_change(
     """
     current = universe.sp500_universe_breadth(
         panel, period_of_report, as_of_date, mapping,
-        passive_ciks=passive_ciks, history_path=history_path,
+        passive_ciks=passive_ciks, history_path=history_path, ticker_to_cusip=ticker_to_cusip,
     )
     prior = universe.sp500_universe_breadth(
         panel, prior_quarter_end(period_of_report), as_of_date, mapping,
-        passive_ciks=passive_ciks, history_path=history_path,
+        passive_ciks=passive_ciks, history_path=history_path, ticker_to_cusip=ticker_to_cusip,
     )
     merged = current.merge(prior, on="CUSIP", how="inner", suffixes=("", "_prior"))
     merged["raw_change"] = merged["breadth"] - merged["breadth_prior"]
@@ -115,12 +116,13 @@ def breadth_momentum(
     *,
     passive_ciks: set[str] | None = None,
     history_path: Path = universe.DEFAULT_HISTORY_PATH,
+    ticker_to_cusip: pd.Series | None = None,
 ) -> pd.DataFrame:
     """Full per-formation-date factor contract: composes breadth_change()
     and standardize_cross_section(). Returns [CUSIP, breadth, breadth_prior,
     raw_change, rank_signal, zscore_signal]."""
     changed = breadth_change(
         panel, period_of_report, as_of_date, mapping,
-        passive_ciks=passive_ciks, history_path=history_path,
+        passive_ciks=passive_ciks, history_path=history_path, ticker_to_cusip=ticker_to_cusip,
     )
     return standardize_cross_section(changed)

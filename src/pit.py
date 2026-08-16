@@ -18,18 +18,54 @@ no-lookahead guarantee this module exists to enforce, and the thing
 import pandas as pd
 
 
-def _winning_accessions(panel: pd.DataFrame, period_of_report, as_of_date) -> set:
-    """Accession number of each CIK's latest known filing for
-    `period_of_report` as of `as_of_date`. Ties (same-day original +
-    amendment) are broken by accession number, since same-day pairs do
-    occur and the later accession is the one that supersedes."""
-    period_of_report = pd.Timestamp(period_of_report)
+def _period_slice(panel: pd.DataFrame, period_of_report: pd.Timestamp) -> pd.DataFrame:
+    """Rows for a single PERIODOFREPORT.
+
+    At --full scale (~82M rows), the boolean mask `panel["PERIODOFREPORT"]
+    == X` re-scans the entire panel on every call -- profiled at ~20s/call,
+    78% of it in pyarrow's take kernel moving Arrow-backed string/datetime
+    columns, dominant enough that the full lag x quarter backtest grid
+    (~300+ calls) never finished in a reasonable time. `panel.attrs
+    ["period_groups"]`, if present (see backtest.py's `main()`), is a
+    `{period: int64 row-positions}` dict built once via a single pass over
+    just the PERIODOFREPORT column (`groupby(...).indices`) -- turns this
+    into an O(k) positional take (k = rows in that one quarter) instead of
+    an O(n) full-panel scan. Falls back to the boolean mask when absent
+    (every existing test builds a plain DataFrame with no `.attrs` set), so
+    this is a pure performance path, not a second code path with different
+    semantics -- `.iloc[positions]` and the boolean mask select the exact
+    same rows for the exact same period_of_report.
+    """
+    period_groups = panel.attrs.get("period_groups")
+    if period_groups is not None:
+        positions = period_groups.get(period_of_report)
+        result = panel.iloc[0:0] if positions is None else panel.iloc[positions]
+    else:
+        result = panel[panel["PERIODOFREPORT"] == period_of_report]
+    # pandas propagates .attrs to every derived object via __finalize__,
+    # which deep-copies it -- harmless for a small dict, but period_groups
+    # covers the whole panel (~650MB of position arrays), so every
+    # downstream op on this already-scoped slice (sort_values, groupby,
+    # drop_duplicates, ...) was re-deep-copying that full dict for no
+    # reason (profiled: 79% of this function's real-panel runtime). It's
+    # only ever read here, so once it's been used to build `result`,
+    # nothing downstream needs it.
+    if result.attrs:
+        result.attrs = {}
+    return result
+
+
+def _winning_accessions(period_slice: pd.DataFrame, as_of_date) -> set:
+    """Accession number of each CIK's latest known filing for the given
+    period (already scoped to one PERIODOFREPORT by `_period_slice`), as of
+    `as_of_date`. Ties (same-day original + amendment) are broken by
+    accession number, since same-day pairs do occur and the later accession
+    is the one that supersedes."""
     as_of_date = pd.Timestamp(as_of_date)
 
     submissions = (
-        panel.loc[
-            (panel["PERIODOFREPORT"] == period_of_report)
-            & (panel["FILING_DATE"] <= as_of_date),
+        period_slice.loc[
+            period_slice["FILING_DATE"] <= as_of_date,
             ["CIK", "ACCESSION_NUMBER", "FILING_DATE"],
         ]
         .drop_duplicates()
@@ -44,10 +80,17 @@ def as_of_snapshot(panel: pd.DataFrame, period_of_report, as_of_date) -> pd.Data
 
     `panel` is the long panel produced by `ingest.build_raw_panel`.
     """
-    winning = _winning_accessions(panel, period_of_report, as_of_date)
+    period_of_report = pd.Timestamp(period_of_report)
+    period_slice = _period_slice(panel, period_of_report)
+    winning = _winning_accessions(period_slice, as_of_date)
     if not winning:
         return panel.iloc[0:0] #empty df instead of None/[] to avoid crashes
-    return panel[panel["ACCESSION_NUMBER"].isin(winning)].reset_index(drop=True)
+    # Filtered on the same period_slice, not the full panel: every winning
+    # accession belongs to this period_of_report by construction, so the
+    # ACCESSION_NUMBER match can never land outside period_slice -- this is
+    # the second full-panel scan the docstring above refers to, now folded
+    # into the same small slice as the FILING_DATE filter.
+    return period_slice[period_slice["ACCESSION_NUMBER"].isin(winning)].reset_index(drop=True)
 
 
 def breadth(

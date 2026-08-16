@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src import universe
 from src.factor import breadth_change, breadth_momentum, prior_quarter_end, standardize_cross_section
 
 PERIOD = "2020-03-31"
@@ -187,3 +188,31 @@ def test_breadth_momentum_composes_change_and_standardization(tmp_path):
     assert msft["raw_change"] == -1  # 1 - 2
     # AAPL has the higher raw_change, so it should rank above MSFT.
     assert aapl["rank_signal"] > msft["rank_signal"]
+
+
+def test_breadth_momentum_explicit_ticker_to_cusip_matches_inline_build(tmp_path):
+    # backtest.py's main() builds ticker_to_cusip once and threads it down
+    # through breadth_momentum -> breadth_change -> sp500_universe_breadth
+    # -> sp500_members, instead of every one of ~300+ calls rebuilding it
+    # from `mapping` inline (see universe.build_ticker_to_cusip's
+    # docstring). This must be a pure perf change -- identical output
+    # whether the caller supplies it or leaves it to be built inline.
+    history_path = tmp_path / "sp500_history.csv"
+    _write_history(history_path, [("2019-01-01", "AAPL,MSFT,GOOGL")])
+    panel = _panel([
+        ("A1", "2020-05-10", "13F-HR", "CIK_A", PERIOD, "037833100", 100, 10),
+        ("A2", "2020-05-10", "13F-HR", "CIK_B", PERIOD, "037833100", 100, 10),
+        ("B1", "2020-02-01", "13F-HR", "CIK_A", PRIOR_PERIOD, "037833100", 100, 10),
+    ])
+    mapping = _mapping()
+
+    inline = breadth_momentum(panel, PERIOD, as_of_date="2020-06-01", mapping=mapping, history_path=history_path)
+    threaded = breadth_momentum(
+        panel, PERIOD, as_of_date="2020-06-01", mapping=mapping, history_path=history_path,
+        ticker_to_cusip=universe.build_ticker_to_cusip(mapping),
+    )
+
+    pd.testing.assert_frame_equal(
+        inline.sort_values("CUSIP").reset_index(drop=True),
+        threaded.sort_values("CUSIP").reset_index(drop=True),
+    )
