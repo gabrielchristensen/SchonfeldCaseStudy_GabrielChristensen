@@ -155,7 +155,7 @@ def test_build_sp500_history_trims_window_and_dedups_consecutive_rows(tmp_path, 
         '2015-06-01,"AAPL,MSFT"\n'  # identical membership -- should be dropped
         '2020-01-01,"AAPL,MSFT,GOOGL"\n'
     )
-    monkeypatch.setattr("src.universe.requests.get", lambda *a, **k: _FakeResponse(csv_text))
+    monkeypatch.setattr("src._http.requests.get", lambda *a, **k: _FakeResponse(csv_text))
     out_path = tmp_path / "sp500_history.csv"
 
     result = build_sp500_history(start_date="2010-01-01", out_path=out_path)

@@ -278,7 +278,7 @@ def test_list_datasets_resolves_relative_hrefs_to_full_urls(monkeypatch):
         '<a href="/files/structureddata/data/form-13f-data-sets/2013q2_form13f.zip">2013q2</a>'
         '<a href="https://www.sec.gov/files/structureddata/data/form-13f-data-sets/2015q1_form13f.zip">2015q1</a>'
     )
-    monkeypatch.setattr("src.ingest.requests.get", lambda *a, **k: _FakeResponse(text=html))
+    monkeypatch.setattr("src._http.requests.get", lambda *a, **k: _FakeResponse(text=html))
 
     urls = list_datasets()
 
@@ -293,7 +293,7 @@ def test_list_datasets_dedups_duplicate_hrefs(monkeypatch):
         '<a href="/files/structureddata/data/form-13f-data-sets/2013q2_form13f.zip">a</a>'
         '<a href="/files/structureddata/data/form-13f-data-sets/2013q2_form13f.zip">b</a>'
     )
-    monkeypatch.setattr("src.ingest.requests.get", lambda *a, **k: _FakeResponse(text=html))
+    monkeypatch.setattr("src._http.requests.get", lambda *a, **k: _FakeResponse(text=html))
 
     urls = list_datasets()
 
@@ -301,7 +301,7 @@ def test_list_datasets_dedups_duplicate_hrefs(monkeypatch):
 
 
 def test_download_dataset_writes_atomically_leaves_no_partial_file(tmp_path, monkeypatch):
-    monkeypatch.setattr("src.ingest.requests.get", lambda *a, **k: _FakeResponse(content=b"zip-bytes"))
+    monkeypatch.setattr("src._http.requests.get", lambda *a, **k: _FakeResponse(content=b"zip-bytes"))
     monkeypatch.setattr("src.ingest.time.sleep", lambda s: None)
     dest_dir = tmp_path / "raw"
 
@@ -318,7 +318,7 @@ def test_download_dataset_skips_network_call_when_already_cached(tmp_path, monke
         calls.append((args, kwargs))
         return _FakeResponse(content=b"zip-bytes")
 
-    monkeypatch.setattr("src.ingest.requests.get", fake_get)
+    monkeypatch.setattr("src._http.requests.get", fake_get)
     monkeypatch.setattr("src.ingest.time.sleep", lambda s: None)
     dest_dir = tmp_path / "raw"
 
@@ -335,7 +335,7 @@ def test_download_dataset_force_redownloads_even_if_cached(tmp_path, monkeypatch
         calls.append(1)
         return _FakeResponse(content=f"zip-bytes-v{len(calls)}".encode())
 
-    monkeypatch.setattr("src.ingest.requests.get", fake_get)
+    monkeypatch.setattr("src._http.requests.get", fake_get)
     monkeypatch.setattr("src.ingest.time.sleep", lambda s: None)
     dest_dir = tmp_path / "raw"
 
@@ -351,7 +351,7 @@ def test_download_dataset_failed_request_leaves_no_file(tmp_path, monkeypatch):
         def raise_for_status(self):
             raise requests.HTTPError("404 Client Error")
 
-    monkeypatch.setattr("src.ingest.requests.get", lambda *a, **k: _FailingResponse())
+    monkeypatch.setattr("src._http.requests.get", lambda *a, **k: _FailingResponse())
     dest_dir = tmp_path / "raw"
 
     with pytest.raises(requests.HTTPError):
@@ -362,7 +362,7 @@ def test_download_dataset_failed_request_leaves_no_file(tmp_path, monkeypatch):
 
 
 def test_download_dataset_accepts_full_url(tmp_path, monkeypatch):
-    monkeypatch.setattr("src.ingest.requests.get", lambda *a, **k: _FakeResponse(content=b"zip-bytes"))
+    monkeypatch.setattr("src._http.requests.get", lambda *a, **k: _FakeResponse(content=b"zip-bytes"))
     monkeypatch.setattr("src.ingest.time.sleep", lambda s: None)
     dest_dir = tmp_path / "raw"
 
@@ -405,7 +405,7 @@ def test_download_dataset_retries_on_connection_error(tmp_path, monkeypatch):
             raise requests.exceptions.ConnectionError("No route to host")
         return _FakeResponse(content=b"zip-bytes")
 
-    monkeypatch.setattr("src.ingest.requests.get", fake_get)
+    monkeypatch.setattr("src._http.requests.get", fake_get)
     monkeypatch.setattr("src.ingest.time.sleep", lambda s: None)
 
     dest = download_dataset("ds1_form13f.zip", dest_dir=tmp_path / "raw")
@@ -424,7 +424,7 @@ def test_list_datasets_retries_on_429(monkeypatch):
             return _StatusResponse(429)
         return _StatusResponse(200, text=html)
 
-    monkeypatch.setattr("src.ingest.requests.get", fake_get)
+    monkeypatch.setattr("src._http.requests.get", fake_get)
     monkeypatch.setattr("src.ingest.time.sleep", lambda s: None)
 
     result = list_datasets()
@@ -437,7 +437,7 @@ def test_download_dataset_raises_after_exhausting_retries(tmp_path, monkeypatch)
     def always_fails(url, headers, timeout):
         raise requests.exceptions.ConnectionError("No route to host")
 
-    monkeypatch.setattr("src.ingest.requests.get", always_fails)
+    monkeypatch.setattr("src._http.requests.get", always_fails)
     monkeypatch.setattr("src.ingest.time.sleep", lambda s: None)
 
     with pytest.raises(requests.exceptions.ConnectionError):
@@ -457,7 +457,7 @@ def test_download_dataset_does_not_retry_on_404(tmp_path, monkeypatch):
         calls.append(1)
         return _StatusResponse(404)
 
-    monkeypatch.setattr("src.ingest.requests.get", fake_get)
+    monkeypatch.setattr("src._http.requests.get", fake_get)
     monkeypatch.setattr("src.ingest.time.sleep", lambda s: None)
 
     with pytest.raises(requests.exceptions.HTTPError):

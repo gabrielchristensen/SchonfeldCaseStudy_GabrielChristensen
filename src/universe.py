@@ -23,9 +23,9 @@ import io
 from pathlib import Path
 
 import pandas as pd
-import requests
 
 from src import pit
+from src._http import get_with_retry
 
 SP500_HISTORY_URL = (
     "https://raw.githubusercontent.com/fja05680/sp500/master/"
@@ -48,8 +48,8 @@ def build_sp500_history(
     a given date), and commit the result verbatim in the same date,tickers
     shape. No network needed at pipeline runtime after this runs once.
     """
-    resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30)
-    resp.raise_for_status() #Throw exception if status error code
+    print(f"Fetching S&P 500 membership history from {url} ...")
+    resp = get_with_retry(url, timeout=30, headers={"User-Agent": USER_AGENT})
     history = pd.read_csv(io.StringIO(resp.text))
     history["date"] = pd.to_datetime(history["date"])
     history = history[history["date"] >= pd.Timestamp(start_date)].reset_index(drop=True)

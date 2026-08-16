@@ -255,6 +255,15 @@ def _stats_table(rows: list[dict], *, row_label_key: str, row_label_name: str) -
                 text = f"{value:.2%}"
             elif c == "sharpe":
                 text = f"{value:.2f}"
+            elif pd.isna(value):
+                # performance_stats() deliberately returns NaN for every
+                # stat (n_days included) when a series has fewer than 2
+                # NAV points -- a real, degenerate-but-valid case (e.g. a
+                # window with zero closed quarters), not a formatting
+                # afterthought. int(nan) raises ValueError; caught for
+                # real by running --mode smoke against a tiny sample
+                # window that happened to close zero quarters.
+                text = "n/a"
             else:
                 text = f"{int(value)}"
             cells += f"<td{cls_attr}>{text}</td>"

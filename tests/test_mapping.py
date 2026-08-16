@@ -76,7 +76,7 @@ def test_fetch_openfigi_mappings_picks_largest_composite_figi_group(monkeypatch)
         {"ticker": "UNRELATED", "exchCode": "XX", "name": "SOME OTHER CO", "compositeFIGI": "FIGI_OTHER",
          "marketSector": "Equity", "securityType2": "Common Stock"},
     ]}]
-    monkeypatch.setattr("src.mapping.requests.post", lambda *a, **k: _FakeResponse(payload))
+    monkeypatch.setattr("src._http.requests.post", lambda *a, **k: _FakeResponse(payload))
 
     result = fetch_openfigi_mappings(["037833100"])
 
@@ -95,7 +95,7 @@ def test_fetch_openfigi_mappings_resolved_column_is_real_bool_dtype(monkeypatch)
         {"data": [{"ticker": "AAPL", "exchCode": "US", "name": "APPLE INC", "compositeFIGI": "F1"}]},
         {"error": "No identifier found."},
     ]
-    monkeypatch.setattr("src.mapping.requests.post", lambda *a, **k: _FakeResponse(payload))
+    monkeypatch.setattr("src._http.requests.post", lambda *a, **k: _FakeResponse(payload))
     monkeypatch.setattr("src.mapping.time.sleep", lambda s: None)
 
     result = fetch_openfigi_mappings(["037833100", "000000000"])
@@ -123,7 +123,7 @@ def test_fetch_openfigi_mappings_handles_no_us_exchange_row(monkeypatch):
         {"ticker": "XOM", "exchCode": "QU", "name": "EXXON MOBIL CORP", "compositeFIGI": "FIGI_XOM",
          "marketSector": "Equity", "securityType2": "Common Stock"},
     ]}]
-    monkeypatch.setattr("src.mapping.requests.post", lambda *a, **k: _FakeResponse(payload))
+    monkeypatch.setattr("src._http.requests.post", lambda *a, **k: _FakeResponse(payload))
 
     result = fetch_openfigi_mappings(["30231G102"])
 
@@ -132,7 +132,7 @@ def test_fetch_openfigi_mappings_handles_no_us_exchange_row(monkeypatch):
 
 def test_fetch_openfigi_mappings_marks_unresolved_without_dropping(monkeypatch):
     payload = [{"error": "No identifier found."}]
-    monkeypatch.setattr("src.mapping.requests.post", lambda *a, **k: _FakeResponse(payload))
+    monkeypatch.setattr("src._http.requests.post", lambda *a, **k: _FakeResponse(payload))
 
     result = fetch_openfigi_mappings(["000000000"])
 
@@ -151,7 +151,7 @@ def test_fetch_openfigi_mappings_batches_at_10_when_unauthenticated(monkeypatch)
         calls.append(len(json))
         return _FakeResponse([{"data": [{"ticker": "X", "exchCode": "US", "name": "X CORP"}]}] * len(json))
 
-    monkeypatch.setattr("src.mapping.requests.post", fake_post)
+    monkeypatch.setattr("src._http.requests.post", fake_post)
     monkeypatch.setattr("src.mapping.time.sleep", lambda s: None)
 
     cusips = [f"CUSIP{i:04d}" for i in range(25)]
@@ -168,7 +168,7 @@ def test_fetch_openfigi_mappings_batches_at_100_when_authenticated(monkeypatch):
         calls.append(len(json))
         return _FakeResponse([{"data": [{"ticker": "X", "exchCode": "US", "name": "X CORP"}]}] * len(json))
 
-    monkeypatch.setattr("src.mapping.requests.post", fake_post)
+    monkeypatch.setattr("src._http.requests.post", fake_post)
     monkeypatch.setattr("src.mapping.time.sleep", lambda s: None)
 
     cusips = [f"CUSIP{i:04d}" for i in range(250)]
@@ -185,7 +185,7 @@ def test_fetch_openfigi_mappings_sends_api_key_header(monkeypatch):
         captured["headers"] = headers
         return _FakeResponse([{"data": [{"ticker": "X", "exchCode": "US", "name": "X CORP"}]}])
 
-    monkeypatch.setattr("src.mapping.requests.post", fake_post)
+    monkeypatch.setattr("src._http.requests.post", fake_post)
 
     fetch_openfigi_mappings(["037833100"], api_key="secret-key")
 
@@ -201,7 +201,7 @@ def test_fetch_openfigi_mappings_retries_once_on_429(monkeypatch):
             return _FakeResponse({}, status_code=429)
         return _FakeResponse([{"data": [{"ticker": "X", "exchCode": "US", "name": "X CORP"}]}])
 
-    monkeypatch.setattr("src.mapping.requests.post", fake_post)
+    monkeypatch.setattr("src._http.requests.post", fake_post)
     monkeypatch.setattr("src.mapping.time.sleep", lambda s: None)
 
     result = fetch_openfigi_mappings(["037833100"])
@@ -221,7 +221,7 @@ def test_fetch_openfigi_mappings_retries_on_connection_error(monkeypatch):
             raise requests.exceptions.ConnectionError("No route to host")
         return _FakeResponse([{"data": [{"ticker": "X", "exchCode": "US", "name": "X CORP"}]}])
 
-    monkeypatch.setattr("src.mapping.requests.post", fake_post)
+    monkeypatch.setattr("src._http.requests.post", fake_post)
     monkeypatch.setattr("src.mapping.time.sleep", lambda s: None)
 
     result = fetch_openfigi_mappings(["037833100"])
@@ -234,7 +234,7 @@ def test_fetch_openfigi_mappings_raises_after_exhausting_retries(monkeypatch):
     def fake_post(url, headers, json, timeout):
         raise requests.exceptions.ConnectionError("No route to host")
 
-    monkeypatch.setattr("src.mapping.requests.post", fake_post)
+    monkeypatch.setattr("src._http.requests.post", fake_post)
     monkeypatch.setattr("src.mapping.time.sleep", lambda s: None)
 
     with pytest.raises(requests.exceptions.ConnectionError):
@@ -258,7 +258,7 @@ def test_fetch_openfigi_mappings_checkpoint_resumes_after_failure(tmp_path, monk
                 raise requests.exceptions.ConnectionError("No route to host")
         return _FakeResponse([{"data": [{"ticker": f"T{j['idValue']}", "exchCode": "US", "name": "X"}]} for j in json])
 
-    monkeypatch.setattr("src.mapping.requests.post", flaky_post)
+    monkeypatch.setattr("src._http.requests.post", flaky_post)
     monkeypatch.setattr("src.mapping.time.sleep", lambda s: None)
     # Small batch size so 3 CUSIPs span 3 separate requests, letting the
     # 2nd one fail without touching the 1st or 3rd.

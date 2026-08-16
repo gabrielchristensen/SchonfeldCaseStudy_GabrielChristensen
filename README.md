@@ -60,8 +60,21 @@ pip install -r requirements.txt
 
 ## How to evaluate this repo, in increasing order of cost
 
+**0. The single-command version:** `python -m src.run` regenerates the
+HTML report + detail CSVs from the committed backtest artifacts (no
+network, no re-run of the backtest — the same thing step 3 below does with
+two separate commands). `python -m src.run --mode smoke` is a real,
+small, end-to-end wiring check (real SEC + yfinance calls, but a 3-file
+sample instead of the full archive) that exercises the *whole* chain —
+ingest → backtest → report — in one shot; `python -m src.run --mode full`
+is the one-command version of step 4's real full reproduction. See
+`src/run.py`'s module docstring (or `python -m src.run --help`) for what
+each mode actually does and why. The steps below show the same things run
+manually, one module at a time, for anyone who wants to see each stage in
+isolation rather than trust an orchestrator.
+
 **1. Prove the pipeline is real (~1 minute, live SEC data):**
-`pytest` runs 129 tests, fully offline. `python -m src.ingest` (no
+`pytest` runs 147 tests, fully offline. `python -m src.ingest` (no
 flags) downloads 3 real SEC 13F datasets and parses them — watch real
 filing data flow into a point-in-time panel. Each command below is a
 single line — copy-paste it exactly as shown, on any OS/shell:
@@ -84,6 +97,9 @@ deliberately (not just source code) — `data/processed/backtest_results.pkl`,
 for this specific reason: they let the reporting/analysis layer be
 re-run and checked against what's already committed, with **no network
 call and no re-running the actual backtest**:
+```bash
+python -m src.run   # equivalent to the two commands below
+```
 ```bash
 python -m src.report --results data/processed/backtest_results.pkl --prices data/processed/prices.parquet
 python -m src.detail --results data/processed/backtest_results.pkl --prices data/processed/prices.parquet
@@ -111,16 +127,35 @@ committed weight.
 **4. Reproduce the real backtest from zero (real time, optional):**
 `python -m src.ingest --full` downloads the entire SEC archive (~55
 zips, several GB, checkpointed — safe to interrupt and resume). Then
-run the actual backtest against the full panel it produces:
+run the actual backtest against the full panel it produces, then
+regenerate the report/detail outputs from that real result:
+```bash
+python -m src.run --mode full   # equivalent to the four commands below
+```
 ```bash
 python -m src.ingest --full
 python -m src.backtest --panel data/processed/13f_panel_full.parquet --out data/processed/backtest_results.pkl
+python -m src.report --results data/processed/backtest_results.pkl --prices data/processed/prices.parquet
+python -m src.detail --results data/processed/backtest_results.pkl --prices data/processed/prices.parquet
 ```
 The full lag×cost sensitivity grid now runs in a few minutes (a real
 performance bottleneck was found and fixed during this project — see
 `docs/full_project_documentation.md` §2, Phase 4) — this is fast enough
 to run live if useful during a technical discussion, not something that
 has to be taken on faith.
+
+## Reference data (already built, committed, rarely needs rerunning)
+
+`data/reference/cusip_ticker_map.csv` (the CUSIP↔ticker crosswalk) and
+`data/reference/sp500_history.csv` (point-in-time S&P 500 membership) are
+small, committed, one-time builds — not part of the repeatable pipeline
+above, and not run by `src/run.py`'s stages. Rebuild either only if you
+have a specific reason to (a new CUSIP needs mapping, the S&P history
+needs extending):
+```bash
+python -m src.mapping --build
+python -m src.universe --build-sp500-history
+```
 
 ## Structure
 
@@ -140,11 +175,13 @@ data/
                # S&P 500 point-in-time membership, passive-manager list)
 notebooks/     # exploratory analysis (regime_and_attribution.ipynb)
 src/           # reusable pipeline code: ingest, pit, mapping, universe,
-               # factor, backtest, report, detail
-tests/         # one test file per src/ module, 129 tests total
+               # factor, backtest, report, detail, run (single entry
+               # point), _http (shared resilient GET/POST retry helpers)
+tests/         # one test file per src/ module, 147 tests total
 results/       # the committed, self-contained HTML backtest report
   backtest_report.html   # the report itself (charts embedded inline)
   charts/                 # the same charts, also as standalone .jpg files
+  smoke/                  # python -m src.run --mode smoke's output (gitignored)
 ```
 
 ## Tests

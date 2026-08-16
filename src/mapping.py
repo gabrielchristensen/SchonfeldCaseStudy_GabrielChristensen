@@ -35,7 +35,8 @@ import time
 from pathlib import Path
 
 import pandas as pd
-import requests
+
+from src._http import post_with_retry
 
 OPENFIGI_URL = "https://api.openfigi.com/v3/mapping"
 USER_AGENT = "SchonfeldCaseStudy gabriel.christensen2019@gmail.com"
@@ -148,8 +149,8 @@ def fetch_openfigi_mappings(
     new_rows = [] #Results from the current run
     for i in range(0, len(remaining), batch_size):
         batch = remaining[i : i + batch_size] #Slicing doesnt throw "Out of Index Error"
-        jobs = [{"idType": "ID_CUSIP", "idValue": c} for c in batch] #Indicates CUSIP type 
-        resp = _post_with_retry(headers, jobs)
+        jobs = [{"idType": "ID_CUSIP", "idValue": c} for c in batch] #Indicates CUSIP type
+        resp = post_with_retry(OPENFIGI_URL, headers=headers, json=jobs)
         results = resp.json()
         batch_rows = []
         for cusip, job in zip(batch, results):
@@ -179,34 +180,6 @@ def fetch_openfigi_mappings(
     # caller always gets a real boolean column, not a footgun.
     combined["RESOLVED"] = combined["RESOLVED"].astype(bool)
     return combined #One output row per input CUSIP [CUSIP, TICKER, NAME, RESOLVED]
-
-
-def _post_with_retry(headers: dict, jobs: list[dict], max_attempts: int = 5):
-    """Retry on transient failures -- connection errors/timeouts (a real
-    "No route to host" killed an unattended ~49-minute build mid-run with no
-    resilience) as well as 429 (rate limit) and 5xx -- with exponential
-    backoff. No rate-limit headers are exposed to compute a precise
-    backoff, so a fixed schedule (5s, 10s, 20s, 40s) is used instead.
-    """
-    delay = 5
-    for attempt in range(max_attempts):
-        try:
-            resp = requests.post(OPENFIGI_URL, headers=headers, json=jobs, timeout=30)
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-            if attempt == max_attempts - 1:
-                raise
-            time.sleep(delay)
-            delay *= 2
-            continue
-        if resp.status_code == 429 or resp.status_code >= 500:
-            if attempt == max_attempts - 1:
-                resp.raise_for_status()
-            time.sleep(delay)
-            delay *= 2
-            continue
-        resp.raise_for_status()
-        return resp
-    raise RuntimeError("unreachable")  # pragma: no cover
 
 
 def sp500_ticker_coverage(mapping_df: pd.DataFrame, sp500_history_path: Path) -> dict:

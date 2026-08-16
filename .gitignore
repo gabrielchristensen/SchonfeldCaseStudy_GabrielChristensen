@@ -33,6 +33,11 @@ data/processed/*
 !data/processed/quarter_asset_detail.csv
 !data/processed/subperiod_stats.csv
 
+# `python -m src.run --mode smoke` output -- a throwaway wiring check
+# against a tiny sample window (real content is not a meaningful backtest,
+# see src/run.py's docstring), not a deliverable.
+results/smoke/
+
 # OS / editor
 .DS_Store
 .idea/

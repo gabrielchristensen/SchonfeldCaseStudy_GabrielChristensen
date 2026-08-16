@@ -3,7 +3,7 @@ import re
 import pandas as pd
 
 from src.backtest import COST_BPS_GRID, LAG_DAYS_GRID, PRIMARY_COST_BPS, PRIMARY_LAG_DAYS
-from src.report import build_report
+from src.report import _stats_table, build_report
 
 
 def _nav(values):
@@ -141,6 +141,23 @@ def test_build_report_skips_regime_section_without_prices(tmp_path):
 
     assert "Regime & attribution" not in html
     assert "Benchmark correlation" not in html
+
+
+def test_stats_table_renders_nan_stats_as_na_instead_of_raising():
+    # performance_stats() deliberately returns NaN for every stat (n_days
+    # included) when a NAV series has fewer than 2 points -- a real,
+    # degenerate-but-valid case (e.g. a window with zero closed quarters),
+    # caught for real by running `python -m src.run --mode smoke` against
+    # a tiny sample window that happened to close zero quarters. int(nan)
+    # used to raise ValueError here.
+    nan_row = {
+        "label": "Long-short spread",
+        "total_return": float("nan"), "annualized_return": float("nan"),
+        "annualized_vol": float("nan"), "sharpe": float("nan"),
+        "max_drawdown": float("nan"), "hit_rate": float("nan"), "n_days": float("nan"),
+    }
+    html = _stats_table([nan_row], row_label_key="label", row_label_name="Series")
+    assert "n/a" in html
 
 
 def test_build_report_handles_empty_results_without_raising(tmp_path):

@@ -43,7 +43,8 @@ from pathlib import Path
 from urllib.parse import urljoin
 
 import pandas as pd
-import requests
+
+from src._http import get_with_retry
 
 SEC_INDEX_URL = "https://www.sec.gov/data-research/sec-markets-data/form-13f-data-sets"
 SEC_FILE_BASE = "https://www.sec.gov/files/structureddata/data/form-13f-data-sets"
@@ -73,50 +74,6 @@ def _headers() -> dict:
     return {"User-Agent": USER_AGENT}
 
 
-def _get_with_retry(url: str, *, timeout: int, max_attempts: int = 5) -> requests.Response:
-    """GET with exponential-backoff retry on transient failures --
-    connection errors/timeouts and 429/5xx -- mirroring
-    mapping.py::_post_with_retry's proven pattern (same fixed 5s/10s/
-    20s/40s schedule, no rate-limit headers to compute a precise backoff
-    from). A prior unresilient version of this exact call pattern
-    (mapping.py's OpenFIGI POST) was killed mid-run by a real transient
-    "No route to host" with zero recovery -- ingest.py's own downloads
-    have the same risk profile (dozens of sequential network calls, a
-    long unattended run) and, until now, none of this resilience.
-
-    Also prints on every retry (mapping.py's version doesn't) and lets
-    any failure that survives every attempt propagate as a normal
-    exception -- never silently swallowed, always visible with which
-    URL and how many attempts it took.
-    """
-    delay = 5
-    for attempt in range(max_attempts):
-        try:
-            resp = requests.get(url, headers=_headers(), timeout=timeout)
-            resp.raise_for_status()
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
-            if attempt == max_attempts - 1:
-                raise
-            print(f"  {exc.__class__.__name__} fetching {url}, retrying in {delay}s "
-                  f"(attempt {attempt + 1}/{max_attempts})...")
-        except requests.exceptions.HTTPError as exc:
-            # A genuine client error (404, ...) is permanent, not transient
-            # -- only retry a status this specific (429/5xx), and only if
-            # the status is actually determinable (a response we can't
-            # inspect gets re-raised immediately, same as any other
-            # unretryable failure).
-            status = getattr(exc.response, "status_code", None)
-            if attempt == max_attempts - 1 or status is None or (status != 429 and status < 500):
-                raise
-            print(f"  HTTP {status} fetching {url}, retrying in {delay}s "
-                  f"(attempt {attempt + 1}/{max_attempts})...")
-        else:
-            return resp
-        time.sleep(delay)
-        delay *= 2
-    raise RuntimeError("unreachable")  # pragma: no cover
-
-
 def list_datasets() -> list[str]:
     """Scrape the SEC index page for every available dataset's full URL.
 
@@ -129,7 +86,7 @@ def list_datasets() -> list[str]:
     use of set to avoid duplicates
 
     """
-    resp = _get_with_retry(SEC_INDEX_URL, timeout=30)
+    resp = get_with_retry(SEC_INDEX_URL, timeout=30, headers=_headers())
     hrefs = re.findall(r'href="([^"]*_form13f\.zip)"', resp.text, re.I)
     datasets = sorted({urljoin(SEC_INDEX_URL, href) for href in hrefs})
     print(f"Found {len(datasets)} datasets on SEC's index page.")
@@ -153,7 +110,7 @@ def download_dataset(url_or_filename: str, dest_dir: Path = RAW_DIR, *, force: b
     if dest.exists() and not force:
         return dest
     print(f"  downloading {filename}...")
-    resp = _get_with_retry(url, timeout=180) #Bigger timeout margins because the zipfiles are bigger
+    resp = get_with_retry(url, timeout=180, headers=_headers()) #Bigger timeout margins because the zipfiles are bigger
     tmp = dest.with_suffix(dest.suffix + ".part") #creates file as .part
     tmp.write_bytes(resp.content)
     tmp.replace(dest)  # atomic on same filesystem

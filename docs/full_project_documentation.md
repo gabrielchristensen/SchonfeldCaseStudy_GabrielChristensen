@@ -27,6 +27,7 @@ reference on its own.
    - [Cross-Platform Reproducibility Hardening](#cross-platform-reproducibility-hardening)
    - [Signal and Benchmark Diagnostics](#signal-and-benchmark-diagnostics-srcdetailpy-notebookssignal_and_benchmark_diagnosticsipynb)
    - [HTML Report Redesign](#html-report-redesign-srcreportpy)
+   - [Single Pipeline Entry Point](#single-pipeline-entry-point-srcrunpy-src_httppy)
 3. [Defense Quick-Reference Index](#3-defense-quick-reference-index)
 
 ---
@@ -65,12 +66,14 @@ reproducible by running the pipeline (see 1.2).
 
 ### 1.2 Pipeline Workflow
 
-The pipeline is eight modules under `src/`, each with a narrow
+The pipeline is ten modules under `src/`, each with a narrow
 responsibility, composing in one direction:
 
 ```
 ingest → pit → mapping → universe → factor → backtest → report
                                               ↘ detail
+_http (shared GET/POST retry, used by ingest/mapping/universe)
+run (orchestrates ingest/backtest/report/detail as one command)
 ```
 
 | Module | Responsibility | CLI |
@@ -83,13 +86,33 @@ ingest → pit → mapping → universe → factor → backtest → report
 | `backtest.py` | Formation-date scheduling, decile long/short portfolios, transaction costs, benchmarks, performance stats. | `python -m src.backtest [--quick]` |
 | `report.py` | Renders the backtest results pickle into the self-contained HTML deliverable. | `python -m src.report` |
 | `detail.py` | Derives per-asset holdings/returns and sub-period regime stats from an already-run backtest — no changes to `backtest.py`. | `python -m src.detail` |
+| `_http.py` | Shared `get_with_retry`/`post_with_retry` (5-attempt, 5s/10s/20s/40s backoff) — the one place every network call in this project goes through. | none (pure library) |
+| `run.py` | Single entry point chaining the above (`report-only`/`smoke`/`full`) — see below. | `python -m src.run [--mode ...]` |
 
-**To reproduce the full pipeline from a clean clone:**
+**To reproduce the full pipeline from a clean clone, the short way:**
 
 ```bash
 ./setup.sh && source .venv/bin/activate
-pytest                                    # 129 tests, fully offline, no data needed
+pytest                       # 147 tests, fully offline, no data needed
+python -m src.run            # report-only (default): regenerate the HTML report +
+                              # detail CSVs from the committed backtest artifacts,
+                              # no network
+python -m src.run --mode smoke  # real, small end-to-end wiring check
+python -m src.run --mode full   # the real, expensive full reproduction from zero
+```
 
+`src/run.py` shells out to each stage's own already-tested CLI
+(`subprocess.run([sys.executable, "-m", "src.X", ...], check=True,
+cwd=<repo root>)`) rather than re-implementing any stage's logic, so every
+module's own `main()`/argparse contract stays the single source of truth.
+It does **not** run `mapping.py --build`/`universe.py
+--build-sp500-history` — those build the small, already-committed
+reference CSVs, a one-time step, not part of the repeatable pipeline (see
+below for those commands directly). The manual, one-module-at-a-time
+version of the same steps, for anyone who wants to see each stage run in
+isolation:
+
+```bash
 # See real 13F data flow through the pipeline (fast — 3 real datasets):
 python -m src.ingest
 
@@ -832,6 +855,97 @@ the user judged it not worth a dedicated section) -- `ic_series` remains
 in `results` and still feeds `detail.subperiod_stats`'s regime-level IC,
 only the report's separate top-level section was removed.
 
+### Single Pipeline Entry Point (`src/run.py`, `src/_http.py`)
+
+Two separate asks: a progress meter for `universe.py`, and an assessment
+of how easy this repo actually is to run end-to-end.
+
+**`universe.py`**: a full read found no real multi-item loop to put a
+`[i/n]`-style meter on. Its only functions are either one-shot
+(`build_sp500_history()`'s single `requests.get()`) or hot-path
+(`sp500_members()`/`sp500_universe_breadth()`, called ~250+ times in a
+real full backtest — 3 lags × ~42 quarters × 2 breadth calls each, from
+`factor.breadth_change()`). `backtest.py`'s own `run_backtest()` loop
+already prints one line per `(lag, quarter)` at exactly that granularity —
+adding prints inside the hot-path functions would have spammed ~250
+duplicate/interleaved lines into already-correct output, so no meter was
+added there. The one genuine, honest gap: `build_sp500_history()`'s
+network call was a bare, unretried `requests.get()`, the same anti-pattern
+`ingest.py`'s and `mapping.py`'s own retry helpers were built to fix
+elsewhere in this project. Fixed by extracting **both** of those
+independent retry-loop copies (they'd never been consolidated, just each
+written after its own real mid-run failure — `mapping.py`'s OpenFIGI POST
+killed by a real "No route to host" ~49 minutes in; `ingest.py`'s
+downloads got the same treatment afterward for the same risk profile) into
+a new `src/_http.py` (`get_with_retry`/`post_with_retry`), which
+`ingest.py`, `mapping.py`, and now `universe.py` all call — a real dedup,
+not just an `ingest`-specific extraction. `ingest.py`/`mapping.py`/
+`universe.py` no longer `import requests` directly (only `_http.py` does);
+their tests' `monkeypatch.setattr("src.X.requests.get/post", ...)` targets
+were updated to `src._http.requests.get/post` accordingly (`requests` and
+`time` are singleton modules, so `time.sleep` patches needed no change —
+patching it via any module's dotted path patches the same shared object
+every caller sees).
+
+**Repo-wide runnability**: a full survey of every `src/*.py` CLI entry
+point plus `README.md`'s exact command sequence confirmed there was no
+single "run everything" command anywhere — reproducing the full pipeline
+meant manually running up to 5 separate `python -m src.X` invocations, and
+several of their defaults didn't actually chain (README's "quick" ingest
+sample writes `13f_panel_sample.parquet`, but `backtest.py`'s default
+`--panel` is `13f_panel_full.parquet`; `backtest.py --quick`'s output path
+isn't `report.py`'s default input path). New `src/run.py`, `python -m
+src.run --mode {report-only,smoke,full}` (default `report-only`), shells
+out to each stage's own already-tested CLI via `subprocess.run(...,
+check=True, cwd=<repo root>)` rather than re-implementing any stage's
+logic — every path passed between consecutive stages is constructed once,
+in `run.py`, so stages are guaranteed to chain by construction instead of
+by accident. `--mode smoke` runs a real (small) SEC + yfinance end-to-end
+wiring check without the `--full` archive's cost; `--mode full` is the
+one-command version of the real, expensive reproduction. Reference-data
+builds (`mapping.py --build`/`universe.py --build-sp500-history`) are
+deliberately not auto-run by any mode — one-time, already-committed steps,
+not part of the repeatable pipeline.
+
+Two real things were caught by actually running this, not just writing
+it and trusting it:
+1. **Banner-ordering bug**: the per-stage `=== [i/n] ... ===` banners
+   printed *after* all the child processes' own output instead of before
+   each stage — Python fully block-buffers a parent's stdout when it isn't
+   a real TTY, while each child subprocess's own stdout flushed
+   independently on its own exit. Fixed with `flush=True` on every banner
+   print; verified by re-running and confirming the interleaving order
+   actually changed, not just that the flag was added.
+2. **A real `report.py` bug**, found by `--mode smoke` running for real
+   against the tiny validation sample (which happened to close zero
+   quarters in its short window): `backtest.performance_stats()`
+   deliberately returns `NaN` for every stat, `n_days` included, when a
+   NAV series has fewer than 2 points (a real, documented degenerate-input
+   case) — but `report._stats_table` did `int(row["n_days"])` unguarded,
+   which raises `ValueError: cannot convert float NaN to integer`. This
+   pre-dated `run.py` entirely (any degenerate/short `--quick` window could
+   have hit it); the smoke test just happened to be the first real run
+   small enough to trigger it. Fixed in `_stats_table` to render `"n/a"`
+   for a NaN non-percentage/non-sharpe stat instead of crashing, with a
+   dedicated regression test (`test_stats_table_renders_nan_stats_as_na_
+   instead_of_raising`) rather than trusting the one real repro alone.
+
+Also: `--mode full` was reasoned through and unit-tested (mocked
+`subprocess.run`, asserting the constructed argv/chaining) but
+deliberately never executed for real during this work — multi-GB,
+multi-hour, and the already-committed artifacts represent one already-
+verified real full run; re-running it wasn't the point of this exercise.
+Path-anchoring (`REPO_ROOT = Path(__file__).resolve().parent.parent`,
+`cwd=REPO_ROOT` on every stage) was verified for real too: `python -m
+src.run` itself must be invoked from the repo root (an inherent
+`python -m pkg.module` constraint every module in this repo already
+shares, not a regression), but running `run.py` directly as a script from
+inside `src/` (`cd src && python run.py`) produces byte-identical output
+paths to running from the repo root, confirming the child-stage cwd
+anchoring works independent of where `run.py` itself was launched from.
+147/147 tests pass (140 before this work: 6 new in `tests/test_run.py`, 1
+new NaN-guard regression test in `tests/test_report.py`).
+
 ---
 
 ## 3. Defense Quick-Reference Index
@@ -846,5 +960,5 @@ criteria (`docs/prompt.pdf`):
 | **Data engineering care** — CUSIP mapping, filer dedup, amendments, confidential treatment | CUSIP mapping: `mapping.py`, 4 real bugs found+fixed (Phase 2 above). Filer dedup: `_winning_accessions`' same-day tie-break by accession number (§1.3); voting-authority-split row dedup in `ingest.py` (Phase 1 above). Amendments: "latest filing wins," a deliberate, disclosed scope cut vs. parsing `AMENDMENTTYPE` (Phase 1 above, §1.3). Confidential treatment: `COVERPAGE`'s `CONFDENIEDEXPIRED` detection (Phase 2 above), disclosed as fundamentally unrecoverable from public data until later disclosure, not a gap engineering can close. |
 | **Backtest methodology** — costs, rebalancing, benchmarks, quarterly signal in a daily framework | §1.3 above in full: transaction cost formula, quarterly rebalancing with daily mark-to-market via `leg_nav`, SPY + internal-universe benchmark choice and the cost asymmetry disclosed for it, the daily-rebalanced spread-NAV construction and why it isn't a simple return difference. |
 | **Ability to defend every choice** | This document in full, plus the six phase-specific reports it cross-references, plus `docs/memo.md`'s own Scope Decisions section (what was deliberately excluded, and why, for every axis: holder universe, equity universe, time window, CUSIP genealogy, amendment parsing, value-weighting). |
-| **"Runnable from a clean clone"** (deliverable #1) | [Cross-Platform Reproducibility Hardening](#cross-platform-reproducibility-hardening) above — every gap found via real Windows testing (not assumed), fixed, and re-verified; final confirmation was the user's own Windows machine completing a full `--full` ingest run after the fixes landed. |
+| **"Runnable from a clean clone"** (deliverable #1) | [Cross-Platform Reproducibility Hardening](#cross-platform-reproducibility-hardening) above — every gap found via real Windows testing (not assumed), fixed, and re-verified; final confirmation was the user's own Windows machine completing a full `--full` ingest run after the fixes landed. [Single Pipeline Entry Point](#single-pipeline-entry-point-srcrunpy-src_httppy) above — `python -m src.run` replaces the up-to-5-command manual sequence with one, real path-mismatches between stages fixed by construction, and a real `report.py` NaN-formatting bug was actually caught (not just theorized) by running `--mode smoke` for real. |
 | **"Presents results in self-contained file"** (deliverable #4) | [HTML Report Redesign](#html-report-redesign-srcreportpy) above — `results/backtest_report.html`, zero external refs/JS, verified by `tests/test_report.py`; full lag×cost grid, regime/attribution, and universe-coverage sections folded in on top of the primary result so the single file carries the analysis, not just the headline numbers. |
