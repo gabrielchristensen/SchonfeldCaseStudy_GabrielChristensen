@@ -18,10 +18,10 @@ monotonicity check across the full 10-decile cross-section (not just the two
 traded extremes -- the one section that needs the full raw panel, not just
 committed artifacts; see src.detail.decile_returns), then turnover and
 universe-coverage as supporting diagnostics, then regime/attribution
-(per-era performance, benchmark correlation, top-contributor tickers -- the
-same analysis notebooks/regime_and_attribution.ipynb performs, surfaced here
-so a reader of the HTML report doesn't have to go find the notebook), then a
-disclosures section naming every caveat already surfaced in Phases 1-4,
+(per-era performance, benchmark correlation, top-contributor tickers --
+originally exploratory-notebook-only analysis, surfaced here directly so a
+reader of the HTML report doesn't have to go find a separate notebook),
+then a disclosures section naming every caveat already surfaced in Phases 1-4,
 backed by real measured numbers where the data is available rather than
 qualitative-only prose.
 """

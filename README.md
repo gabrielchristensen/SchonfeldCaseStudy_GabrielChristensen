@@ -6,12 +6,15 @@ research case study — see `docs/prompt.pdf` for the original brief and
 
 ## Setup
 
-Built and tested against **Python 3.12.3** specifically (`.python-version`;
-`pyproject.toml` declares `>=3.10` as the floor `setup.sh` enforces, but
-3.12.3 is the exact version this was validated against).
-`requirements.txt` pins every other dependency to an exact version too —
-a fresh clone should reproduce the same environment this was built in,
-not whatever's newest at install time.
+Requires **Python 3.12.x** (`.python-version` pins 3.12.3 exactly, the
+version this was validated against; `pyproject.toml` enforces `>=3.12` as
+the floor). This is a hard requirement, not a suggestion: `requirements.txt`
+pins exact dependency versions (`numpy==2.5.2`, `scipy==1.18.0`, and others)
+whose published wheels require Python 3.12+ — `pip install` will fail on
+3.10 or 3.11 even though none of this project's own code needs anything
+newer than 3.10's syntax. A fresh clone on Python 3.12.x should reproduce
+the same environment this was built in, not whatever's newest at install
+time.
 
 **macOS / Linux:**
 ```bash
@@ -26,7 +29,7 @@ your Python first, then set up the venv manually:
 ```bash
 python --version
 ```
-Confirm the output is ≥3.10 (ideally 3.12.3), then:
+Confirm the output is 3.12.x, then:
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
@@ -50,8 +53,7 @@ WSL install: https://learn.microsoft.com/windows/wsl/install — Git Bash
 ships with Git for Windows: https://git-scm.com/download/win
 
 **Manual setup on macOS / Linux / WSL / Git Bash** (skips `setup.sh`'s
-Python-version check — confirm you're on ≥3.10, ideally 3.12.3, yourself
-first):
+Python-version check — confirm you're on 3.12.x yourself first):
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -74,7 +76,7 @@ manually, one module at a time, for anyone who wants to see each stage in
 isolation rather than trust an orchestrator.
 
 **1. Prove the pipeline is real (~1 minute, live SEC data):**
-`pytest` runs 147 tests, fully offline. `python -m src.ingest` (no
+`pytest` runs 154 tests, fully offline. `python -m src.ingest` (no
 flags) downloads 3 real SEC 13F datasets and parses them — watch real
 filing data flow into a point-in-time panel. Each command below is a
 single line — copy-paste it exactly as shown, on any OS/shell:
@@ -86,8 +88,6 @@ python -m src.ingest
 **2. See the deliverable (instant, nothing to run):**
 - `docs/memo.md` — the case-study memo.
 - `results/backtest_report.html` — the self-contained backtest report.
-- `notebooks/regime_and_attribution.ipynb` — already executed, real
-  outputs (tables, equity curves, drawdown charts).
 
 **3. Verify the deliverable is reproducible, offline, from committed data:**
 A handful of the actual pipeline's output files are committed
@@ -96,9 +96,10 @@ deliberately (not just source code) — `data/processed/backtest_results.pkl`,
 `data/processed/subperiod_stats.csv` — small (~11MB total) and load-bearing
 for this specific reason: they let the reporting/analysis layer be
 re-run and checked against what's already committed, with **no network
-call and no re-running the actual backtest**:
+call and no re-running the actual backtest**. `python -m src.run` below is
+equivalent to running the two commands after it separately:
 ```bash
-python -m src.run   # equivalent to the two commands below
+python -m src.run
 ```
 ```bash
 python -m src.report --results data/processed/backtest_results.pkl --prices data/processed/prices.parquet
@@ -109,9 +110,9 @@ Regime & attribution section (per-era Sharpe/IC, benchmark correlation and
 beta, top-contributor tickers) straight into the HTML report, reusing
 `src.detail`'s already-tested functions against the same committed
 artifacts; `src.detail`'s own CLI still runs separately to produce the two
-CSVs the regime notebook consumes directly. Every chart in the report is
-also written out as a standalone `.jpg` under `results/charts/`, in
-addition to being embedded inline.
+CSVs that section is built from. Every chart in the report is also written
+out as a standalone `.jpg` under `results/charts/`, in addition to being
+embedded inline.
 
 `prices.parquet` specifically is committed because yfinance's adjusted-
 close data gets revised retroactively (splits/dividends) — re-fetching
@@ -128,9 +129,11 @@ committed weight.
 `python -m src.ingest --full` downloads the entire SEC archive (~55
 zips, several GB, checkpointed — safe to interrupt and resume). Then
 run the actual backtest against the full panel it produces, then
-regenerate the report/detail outputs from that real result:
+regenerate the report/detail outputs from that real result. `python -m
+src.run --mode full` below is equivalent to running the four commands
+after it separately:
 ```bash
-python -m src.run --mode full   # equivalent to the four commands below
+python -m src.run --mode full
 ```
 ```bash
 python -m src.ingest --full
@@ -166,18 +169,16 @@ docs/
   full_project_documentation.md   # full technical reference: structure,
                                    # workflow, every formula, phase-by-phase
                                    # build history, defense quick-reference
-  phase1_report.md ... phase4_audit.md   # detailed per-phase records
 data/
   raw/         # untouched SEC downloads (gitignored)
   processed/   # derived/cleaned data (gitignored, except the 4 small
                # committed artifacts described above)
   reference/   # small committed reference tables (CUSIP crosswalk,
                # S&P 500 point-in-time membership, passive-manager list)
-notebooks/     # exploratory analysis (regime_and_attribution.ipynb)
 src/           # reusable pipeline code: ingest, pit, mapping, universe,
                # factor, backtest, report, detail, run (single entry
                # point), _http (shared resilient GET/POST retry helpers)
-tests/         # one test file per src/ module, 147 tests total
+tests/         # one test file per src/ module, 154 tests total
 results/       # the committed, self-contained HTML backtest report
   backtest_report.html   # the report itself (charts embedded inline)
   charts/                 # the same charts, also as standalone .jpg files

@@ -5,13 +5,13 @@ system is built, how to run it, the exact math behind every number it
 produces, and the full build history phase by phase. `docs/memo.md`
 remains the polished, page-limited case-study deliverable; this document
 is the deeper reference behind it — written for a technical defense
-where any part of the system may need to be explained or extended. The
-six phase-specific reports (`docs/phase1_report.md` through
-`docs/phase4_audit.md`) remain the most detailed record of each phase's
-individual bugs, tests, and validation runs; this document summarizes
-and cross-references them rather than duplicating them, except where a
-formula or design decision needs to be stated in full to be usable as a
-reference on its own.
+where any part of the system may need to be explained or extended. This
+is now the single, most-detailed record of the build in the repo — a
+set of more granular per-phase working documents existed during
+development and were removed in a later repo cleanup (their content
+remains in git history, not duplicated here) once this document's own
+Chronological Narrative below was mature enough to stand on its own as
+the primary reference.
 
 ## Table of Contents
 
@@ -25,9 +25,10 @@ reference on its own.
    - [Phase 3 — Ownership Breadth Momentum Factor](#phase-3--ownership-breadth-momentum-factor)
    - [Phase 4 — Backtest, Report, and Analysis](#phase-4--backtest-report-and-analysis)
    - [Cross-Platform Reproducibility Hardening](#cross-platform-reproducibility-hardening)
-   - [Signal and Benchmark Diagnostics](#signal-and-benchmark-diagnostics-srcdetailpy-notebookssignal_and_benchmark_diagnosticsipynb)
+   - [Signal and Benchmark Diagnostics](#signal-and-benchmark-diagnostics-srcdetailpy)
    - [HTML Report Redesign](#html-report-redesign-srcreportpy)
    - [Single Pipeline Entry Point](#single-pipeline-entry-point-srcrunpy-src_httppy)
+   - [Repository Cleanup](#repository-cleanup)
 3. [Defense Quick-Reference Index](#3-defense-quick-reference-index)
 
 ---
@@ -41,7 +42,6 @@ docs/
   prompt.pdf                          # the case study prompt itself
   memo.md                             # 3-5 page deliverable memo
   full_project_documentation.md       # this file
-  phase1_report.md ... phase4_audit.md  # per-phase detailed records
 data/
   raw/         # untouched SEC downloads (gitignored, local-only)
   processed/   # derived/cleaned data (gitignored, local-only) --
@@ -51,18 +51,17 @@ data/
                #   cusip_ticker_map.csv, cusip_overrides.csv,
                #   sp500_history.csv, passive_manager_ciks.csv,
                #   SOURCES.md (provenance for every one of the above)
-notebooks/     # exploratory analysis (regime_and_attribution.ipynb)
 src/           # reusable pipeline code -- see 1.2 below
 tests/         # one test file per src/ module
 results/       # the committed, self-contained HTML backtest report
 ```
 
-`data/raw/` and `data/processed/` are gitignored by design (per
-`CLAUDE.md`): they're either a straight copy of SEC's public data or
-fully derived from committed inputs plus code, so committing them would
-just be redundant, large, binary weight in the repo. Everything needed
-to regenerate them is either committed (`data/reference/`) or
-reproducible by running the pipeline (see 1.2).
+`data/raw/` and `data/processed/` are gitignored by design: they're
+either a straight copy of SEC's public data or fully derived from
+committed inputs plus code, so committing them would just be redundant,
+large, binary weight in the repo. Everything needed to regenerate them
+is either committed (`data/reference/`) or reproducible by running the
+pipeline (see 1.2).
 
 ### 1.2 Pipeline Workflow
 
@@ -248,9 +247,8 @@ data: correlation ~0.33-0.37 between `breadth_prior` and both
 `|raw_change|` and rank-extremity. Left as-is (a percentage-based
 alternative has its own worse problem: a 5-to-10-holder move reads as a
 "100% increase," almost certainly noise) — see the memo's Results
-section and the Phase 4 regime/attribution notebook for how this shows
-up in practice (concentration in large-cap names, especially the short
-leg).
+section for how this shows up in practice (concentration in large-cap
+names, especially the short leg).
 
 #### Backtest mechanics (`backtest.py`)
 
@@ -388,7 +386,7 @@ total return must tie out exactly) — not against the combined
 ### Phase 1 — Ingestion & Point-in-Time Panel
 
 **Built**: `src/ingest.py` (SEC EDGAR download/parse) and `src/pit.py`
-(point-in-time snapshot logic). Full detail in `docs/phase1_report.md`.
+(point-in-time snapshot logic).
 
 **Key design decisions**: scrape SEC's index page for real filenames
 rather than templating a URL (SEC changed its naming convention in 2024,
@@ -429,8 +427,7 @@ real data, covered by new tests (suite grew 9 → 33).
 
 **Built**: `src/mapping.py` (CUSIP → ticker via OpenFIGI), `src/
 universe.py` (point-in-time S&P 500 membership + passive-manager
-exclusion), plus a `COVERPAGE`-parsing addendum to `src/ingest.py`. Full
-detail in `docs/phase2_report.md`.
+exclusion), plus a `COVERPAGE`-parsing addendum to `src/ingest.py`.
 
 **COVERPAGE addendum**: adds filer-identity and confidential-treatment
 detection. `CONFDENIEDEXPIRED` decoded from real filed examples (blank =
@@ -487,7 +484,7 @@ reference file so it can't silently regress.
 
 ### Phase 3 — Ownership Breadth Momentum Factor
 
-**Built**: `src/factor.py`. Full detail in `docs/phase3_report.md`.
+**Built**: `src/factor.py`.
 
 **Design decisions confirmed before implementation**: standardize via
 both percentile rank (primary — bounded, robust to a single outlier
@@ -528,11 +525,14 @@ noise-vs-signal discussion.
 
 ### Phase 4 — Backtest, Report, and Analysis
 
-**Built**: `src/backtest.py`, `src/report.py`, `src/detail.py`,
-`notebooks/regime_and_attribution.ipynb`. This phase's arc spans one
-extended working session; full detail across
-`docs/phase4_efficient_implementation.md`, `docs/phase4_status.md`, and
-`docs/phase4_audit.md`.
+**Built**: `src/backtest.py`, `src/report.py`, `src/detail.py`, and
+initially a `notebooks/regime_and_attribution.ipynb` for the regime/
+attribution analysis (later removed in a repo cleanup once that same
+analysis was surfaced directly in the HTML report's own Regime &
+attribution section — see [HTML Report
+Redesign](#html-report-redesign-srcreportpy) below — making the
+notebook redundant, not just exploratory). This phase's arc spans one
+extended working session.
 
 **Starting state**: the backtest engine and report generator were
 already implemented and fully tested, but the real end-to-end run had
@@ -584,7 +584,7 @@ memo: the mega-cap tilt disclosed in Phase 3 colliding with a decade of
 mega-cap-led market returns, rather than the breadth-momentum concept
 being disproven outright.
 
-**Pre-commit audit** (`docs/phase4_audit.md`): independently re-derived
+**Pre-commit audit**: independently re-derived
 and verified the core computation logic against the real output (decile
 direction, cost-drag math cross-checked to the exact percentage point,
 closed/open gating explained via a real boundary-date coincidence,
@@ -603,7 +603,8 @@ breadth in some quarters — low materiality, disclosed as a recommended
 follow-up rather than blocking the commit.
 
 **Per-asset detail and regime/attribution analysis** (`src/detail.py`,
-`notebooks/regime_and_attribution.ipynb`): `quarter_asset_detail`
+originally paired with a now-removed notebook, see the note at the top
+of this phase): `quarter_asset_detail`
 reconstructs every quarter's individual ticker returns, contributions,
 and weights directly from already-committed artifacts — no re-run,
 no changes to `backtest.py`'s tested core — reconciled per-leg against
@@ -716,11 +717,18 @@ that actually broke, fixed, verified as far as this environment could
 verify it, and then confirmed again on that same real machine — not
 assumed fixed after landing a plausible-looking change.
 
-### Signal and Benchmark Diagnostics (`src/detail.py`, `notebooks/signal_and_benchmark_diagnostics.ipynb`)
+### Signal and Benchmark Diagnostics (`src/detail.py`)
 
 Analytical completeness added on top of the unchanged primary model:
-a rank-vs-z-score comparison, benchmark correlation, and seaborn-based
-visualization (new dependency, `seaborn==0.13.2`).
+a rank-vs-z-score comparison and benchmark correlation. Originally paired
+with a `notebooks/signal_and_benchmark_diagnostics.ipynb` for seaborn-based
+visualization (`seaborn` was already a dependency by this point, also
+used for `src/report.py`'s chart styling, still is). The notebook itself
+was removed in a later repo cleanup (no notebooks remain in this repo;
+the underlying `src/detail.py` functions below are unaffected and still
+tested), so the specific numbers quoted below are a historical record of
+what that notebook found, not something re-renderable from a file still
+in this repo.
 
 **Verified before designing anything**: `pd.qcut` (decile assignment)
 is invariant to any strictly monotonic transform of its sort key, and
@@ -744,10 +752,13 @@ SPY and the internal universe benchmark. Real result: beta ≈ -0.02 vs.
 SPY, -0.19 vs. the internal universe — near-market-neutral, as expected
 for a long-short spread.
 
-The notebook also renders a **lag × cost Sharpe heatmap** — all 12
-`(lag_days, cost_bps)` combinations were already computed and committed
-from the original run, so this is `performance_stats` applied to
-already-stored data, not a re-run.
+The (now-removed) notebook also rendered a **lag × cost Sharpe heatmap**
+— all 12 `(lag_days, cost_bps)` combinations were already computed and
+committed from the original run, so that was `performance_stats` applied
+to already-stored data, not a re-run. The same grid is still surfaced in
+`results/backtest_report.html`'s "Full lag x cost grid (Sharpe)" section
+(`_grid_heatmap_table` in `src/report.py`), so this view didn't disappear
+with the notebook, just moved to the committed report.
 
 **`backtest.run_backtest()` progress printing**: it had zero `print()`
 calls in its actual grid loop (all of `main()`'s prints happen before/
@@ -803,8 +814,10 @@ logic)**:
 - New **Regime & attribution** section, wired directly to `src.detail`'s
   already-tested functions (`subperiod_stats`, `subperiod_navs`,
   `benchmark_correlation`, `quarter_asset_detail`) — the same analysis
-  `notebooks/regime_and_attribution.ipynb` performs, now reachable from
-  the HTML report itself. `build_report` takes an optional `prices`
+  the original `regime_and_attribution.ipynb` notebook performed (the
+  notebook was removed in a later repo cleanup once this section made it
+  redundant), now reachable from the HTML report itself. `build_report`
+  takes an optional `prices`
   kwarg; when given (and the primary lag's `quarters` carry
   `long_tickers`/`short_tickers`, true for any real run), this section
   renders; when omitted, it's skipped entirely via the same
@@ -1075,6 +1088,53 @@ paths to running from the repo root, confirming the child-stage cwd
 anchoring works independent of where `run.py` itself was launched from.
 147/147 tests pass (140 before this work: 6 new in `tests/test_run.py`, 1
 new NaN-guard regression test in `tests/test_report.py`).
+
+### Repository Cleanup
+
+Later session, pure housekeeping (no code behavior changed): the repo had
+accumulated a set of internal-process documents from development —
+`docs/ai_collaboration_log.md`, and six per-phase working documents
+(`docs/phase1_report.md` through `docs/phase3_report.md`, plus
+`docs/phase4_audit.md`/`phase4_efficient_implementation.md`/
+`phase4_status.md`) — that were useful while building but are redundant
+with this file's own Chronological Narrative and not needed by an
+evaluator. Removed (recoverable from git history, not duplicated here);
+every reference to them elsewhere in this file was fixed rather than left
+dangling. The two exploratory notebooks (`notebooks/regime_and_attribution.ipynb`,
+`notebooks/signal_and_benchmark_diagnostics.ipynb`) were removed the same
+way — neither was ever imported by `src/` or `tests/` (confirmed via
+grep before removal), and the analysis both performed is either
+reachable from the committed `results/backtest_report.html` (regime/
+attribution) or was a one-off diagnostic already fully written up here
+(signal diagnostics) — see the relevant Chronological Narrative entries
+above for exactly what moved where. `jupyter` was dropped from
+`requirements.txt` as a result (nothing else in the repo used it).
+
+Two real, substantive fixes landed alongside the doc cleanup, not just
+deletions:
+- **`pyproject.toml`'s `requires-python` was wrong**: declared `>=3.10`,
+  but `requirements.txt`'s exact pins (`numpy==2.5.2`, `scipy==1.18.0`
+  need `>=3.12`; `pandas==3.0.5` needs `>=3.11`) mean `pip install` was
+  never actually installable below Python 3.12 — verified directly by
+  reading each package's installed wheel metadata
+  (`importlib.metadata.metadata(...)["Requires-Python"]`), not assumed.
+  Fixed to `>=3.12`, matching `.python-version`'s already-correct 3.12.3
+  pin; `setup.sh`'s version gate and error message updated to match, and
+  README's Setup section rewritten to state 3.12.x as a hard requirement
+  rather than "≥3.10, ideally 3.12.3."
+- **README's copy-paste command blocks had inline `#` comments** on two
+  lines (`python -m src.run   # equivalent to the two commands below`
+  and the `--mode full` equivalent) — the same class of bug this
+  project's own Windows-reproducibility work had already found and fixed
+  once (`cmd.exe` doesn't support inline `#` comments on a command line).
+  Moved the explanatory text to prose before each code block instead.
+
+`CLAUDE.md`, `.claudeignore`, and `.claude/` (including this file's own
+sync-documentation skill) were untracked from git (`git rm --cached`,
+files kept on disk) and added to `.gitignore` — Claude Code configuration
+is a local development tool, not part of the submitted deliverable, and
+shouldn't ship in the repo an evaluator clones. 154/154 tests pass
+(untouched by this session — no `src/` logic changed).
 
 ---
 

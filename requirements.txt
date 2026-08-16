@@ -4,7 +4,6 @@ scipy==1.18.0
 matplotlib==3.11.1
 seaborn==0.13.2
 pillow==10.2.0
-jupyter==1.1.1
 pytest==9.1.1
 requests==2.34.2
 pyarrow==25.0.1

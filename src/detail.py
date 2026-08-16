@@ -254,8 +254,8 @@ def subperiod_stats_grid(
     n_splits_list: tuple[int, ...] = (2, 3),
 ) -> pd.DataFrame:
     """subperiod_stats(), concatenated across every lag in `lag_days_grid`
-    and every split count in `n_splits_list` -- lets a caller (the regime
-    notebook) get every granularity/lag combination in one call."""
+    and every split count in `n_splits_list` -- lets a caller get every
+    granularity/lag combination in one call."""
     frames = [
         subperiod_stats(results, lag_days, cost_bps=cost_bps, n_splits=n_splits)
         for lag_days in lag_days_grid

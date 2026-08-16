@@ -46,5 +46,7 @@ results/smoke/
 # Env secrets
 .env
 
-# Claude Code personal/local overrides (not shared project config)
-.claude/settings.local.json
+# Claude Code config -- local-only, not part of the deliverable
+CLAUDE.md
+.claudeignore
+.claude/
