@@ -1422,7 +1422,10 @@ cache-hit path. 164/164 tests pass. Not yet re-verified against a real
 time/bandwidth); the fix was validated via the code path that actually
 produced the reported symptom (the list-accumulation-then-concat
 pattern) plus the full existing `build_raw_panel` test suite, not by
-reproducing the OOM directly.
+reproducing the OOM directly. (Superseded: a real `--full` run was
+completed successfully in this environment after the follow-up fix
+below — see "Since re-verified against a real `--full` run" under the
+next section.)
 
 **Follow-up: the final dedup pass was still a second full-panel
 allocation**. The fix above collapsed the per-dataset combine loop's peak
@@ -1471,10 +1474,43 @@ now genuinely different code from the small-sample path.
 `test_build_raw_panel_with_checkpoint_dir_leaves_no_temp_files_behind`
 confirms both `_combined_raw.parquet` and the new
 `_combined_raw_deduped.parquet` are cleaned up after a successful run.
-Same caveat as above still applies: not yet verified against a real
-`--full` 55-dataset run in this environment — the streaming design
-targets the specific 2x-allocation risk identified by re-reading the code
-after the first fix, not a re-observed crash.
+
+**Since re-verified against a real `--full` run.** Both prior fixes above
+carried the same caveat — validated by unit test and code-path reasoning,
+never by reproducing the actual `--full` workload. That gap is now
+closed: `python -m src.ingest --full` was run to completion in this
+environment against SEC's current 53 published datasets (a prior partial
+run had already checkpointed all 53 datasets and downloaded all raw
+zips, so this run exercised the combine+dedup tail directly rather than
+re-spending hours on download/parse). Result: **81,812,809 rows across
+313,017 filings, completed successfully, exit code 0** — no crash, the
+original failure mode.
+
+A parallel memory sampler (free system RAM + the python process's
+working set, polled every 20s) captured the real shape of the run:
+per-dataset streaming stayed flat and low (~0.5-1.2GB), then three
+distinct spikes at the tail matched the three stages `_dedupe_combined_parquet`
+and the final `to_parquet` call are built from — the keys-only read (peak
+~8.8GB, immediately released by the `del keys` back down to ~1GB), the
+batch-streamed rewrite (stayed flat, as designed), and the final
+read-back + `to_parquet` write (peaked at **11.4GB working set, system
+free RAM down to ~778MB** at the tightest point) — consistent with the
+design: one full-panel-sized allocation, not several stacked. On this
+machine (16GB total RAM) that peak left under 1GB of headroom — it
+completed, but there isn't much margin left; a system with less free RAM
+at the time, or a further-grown panel (more quarters keep getting
+published), could still tip over at that same final `to_parquet` step,
+which is the one allocation this design does not eliminate.
+
+Correctness was checked too, not just completion: comparing the sum of
+each per-dataset checkpoint's row count against the final panel's row
+count found **zero rows removed** — no cross-dataset-boundary duplicate
+exists in the current 53-dataset snapshot, so the dedup pass, exercised
+for real at full scale, altered nothing it shouldn't have (0 remaining
+duplicate `(ACCESSION_NUMBER, CUSIP)` pairs in the output, confirmed
+directly). Both temp files (`_combined_raw.parquet`,
+`_combined_raw_deduped.parquet`) were absent after the run, confirming
+cleanup works at real scale too, not just in the small test fixtures.
 
 **Bias check, specifically look-ahead via amendments**: raised before
 pushing, since this fix rewrote *how* the raw-panel dedup happens and
