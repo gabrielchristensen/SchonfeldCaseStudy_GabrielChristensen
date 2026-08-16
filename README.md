@@ -36,14 +36,15 @@ WSL install: https://learn.microsoft.com/windows/wsl/install — Git Bash
 ships with Git for Windows: https://git-scm.com/download/win
 
 **Manual setup** (any OS, skips `setup.sh`'s Python-version check — confirm
-you're on ≥3.10, ideally 3.12.3, yourself first):
+you're on ≥3.10, ideally 3.12.3, yourself first). macOS / Linux / WSL /
+Git Bash:
 ```bash
-# macOS / Linux / WSL / Git Bash:
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-
-# Windows native (cmd or PowerShell):
+```
+Windows native (`cmd` or PowerShell):
+```bash
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
@@ -52,10 +53,13 @@ pip install -r requirements.txt
 ## How to evaluate this repo, in increasing order of cost
 
 **1. Prove the pipeline is real (~1 minute, live SEC data):**
+`pytest` runs 129 tests, fully offline. `python -m src.ingest` (no
+flags) downloads 3 real SEC 13F datasets and parses them — watch real
+filing data flow into a point-in-time panel. Each command below is a
+single line — copy-paste it exactly as shown, on any OS/shell:
 ```bash
-pytest                 # 129 tests, fully offline, no data needed
-python -m src.ingest   # downloads 3 real SEC 13F datasets, parses them --
-                        # watch real filing data flow into a point-in-time panel
+pytest
+python -m src.ingest
 ```
 
 **2. See the deliverable (instant, nothing to run):**
@@ -74,8 +78,7 @@ re-run and checked against what's already committed, with **no network
 call and no re-running the actual backtest**:
 ```bash
 python -m src.report --results data/processed/backtest_results.pkl
-python -m src.detail --results data/processed/backtest_results.pkl \
-  --prices data/processed/prices.parquet
+python -m src.detail --results data/processed/backtest_results.pkl --prices data/processed/prices.parquet
 ```
 `prices.parquet` specifically is committed because yfinance's adjusted-
 close data gets revised retroactively (splits/dividends) — re-fetching
@@ -89,10 +92,12 @@ SEC data or fully regenerable from committed inputs, so it isn't
 committed weight.
 
 **4. Reproduce the real backtest from zero (real time, optional):**
+`python -m src.ingest --full` downloads the entire SEC archive (~55
+zips, several GB, checkpointed — safe to interrupt and resume). Then
+run the actual backtest against the full panel it produces:
 ```bash
-python -m src.ingest --full   # entire SEC archive, ~55 zips, several GB, checkpointed
-python -m src.backtest --panel data/processed/13f_panel_full.parquet \
-  --out data/processed/backtest_results.pkl
+python -m src.ingest --full
+python -m src.backtest --panel data/processed/13f_panel_full.parquet --out data/processed/backtest_results.pkl
 ```
 The full lag×cost sensitivity grid now runs in a few minutes (a real
 performance bottleneck was found and fixed during this project — see
