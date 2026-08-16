@@ -877,10 +877,80 @@ real chart directly (`../results/charts/primary_drawdown.jpg`), replacing
 one of the three `![INSERT CHART: ...]` placeholders the memo rewrite
 initially shipped with. The equity-curve placeholder was swapped the same
 way, straight to the already-existing `../results/charts/primary_equity_curve.jpg`
-(no new chart code needed there). Only the per-decile-returns placeholder
-remains — it needs new analysis code (`assign_deciles` only tracks the
-top/bottom decile as a tradable portfolio today, not all 10) that wasn't
-built this pass. 148/148 tests pass.
+(no new chart code needed there). The remaining per-decile-returns
+placeholder needed new analysis code (`assign_deciles` only tracks the
+top/bottom decile as a tradable portfolio, not all 10) not built in that
+session -- see the next entry for that work. 148/148 tests pass at this
+point in the narrative.
+
+**Per-decile returns chart, same session, real new analysis code.**
+`quarter_pnl()` only ever persists `long_tickers`/`short_tickers` (the top
+and bottom decile) to `backtest_results.pkl` -- the middle deciles'
+membership is computed once per quarter via `assign_deciles` and then
+discarded, since the real strategy never trades them. Recovering it for a
+monotonicity chart therefore needs to re-score every closed quarter, which
+needs the full raw panel -- the one dependency tier beyond every other
+`detail.py` function except `signal_diagnostics` (committed
+`backtest_results.pkl`/`prices.parquet` alone are not enough), disclosed
+explicitly in both functions' docstrings and in the HTML report's
+disclosures section when the section renders.
+
+Two new functions in `src/detail.py`, following `signal_diagnostics`'
+existing precedent (full-panel dependency, not wired into the default CLI
+path) rather than inventing a new pattern:
+- `decile_returns(panel, mapping_df, prices, results, lag_days, ...)`:
+  re-scores each closed quarter via `factor.breadth_momentum`, assigns all
+  `N_QUANTILES` deciles via `backtest.assign_deciles`, and computes each
+  decile's equal-weight holding-period return via `backtest.leg_nav`
+  (reusing the real backtest's own `as_of_date`/`next_as_of_date`
+  boundaries from `results[...]["quarters"]`) -- one row per
+  (period_of_report, decile). Deliberately NOT a second decile-level
+  backtest: no turnover/cost accounting, since only D1 and D10 are ever
+  actually traded; this answers "is the full cross-section monotonic in
+  expectation," a different question from "what would decile N have
+  returned as a standalone strategy."
+- `decile_summary(decile_df, ...)`: aggregates to one row per decile
+  (n_quarters, mean_return, annualized_return, pct_positive), annualizing
+  via the geometric mean quarterly return compounded to 4 periods/year --
+  the same compounding philosophy `performance_stats()` uses daily,
+  applied to quarterly buckets since these deciles were never stitched
+  into one continuous NAV curve.
+
+`src/report.py`'s `build_report()` gained an optional `decile_df` param
+(pre-computed outside, like `prices`) and a new "Return by decile" section
+(bar chart `decile_returns.jpg`, D1..D10 labeled with which two are
+actually traded) rendered only when `decile_df` is supplied and non-empty,
+plus a dedicated disclosure bullet in Known Limitations explaining this
+section alone can't be regenerated from committed artifacts. `main()`
+gained an optional `--panel` flag (default
+`data/processed/13f_panel_full.parquet`); if the file exists and prices
+were loaded, it prepares the panel (`backtest.prepare_panel`, the same
+category-dtype/`period_groups` fast path the real backtest uses) and calls
+the two new functions before building the report; if absent, the section
+is skipped with a printed note, mirroring the existing `--prices`-missing
+pattern exactly -- `python -m src.report` with no flags is unaffected.
+
+**Verified for real**: ran `python -m src.report` with `--panel` pointed
+at the real, locally-present (gitignored, not committed)
+`13f_panel_full.parquet` -- 82s end to end (panel load + prepare + 42
+quarters re-scored). The real result is a genuinely new, non-obvious
+finding, not just a chart: D10 (the actual long leg) returns **18.8%**
+annualized, clearly the strongest decile and consistent with the memo's
+already-disclosed weak positive IC; D1 (the actual short leg) returns
+**12.2%** -- not the worst decile (D5, at 10.5%, is) and still solidly
+positive, since every decile was profitable across this bull-market
+window. This sharpens (not overturns) the mega-cap-tilt explanation
+already in the memo: the long leg is doing real work, but shorting *any*
+decile was a structural headwind independent of stock selection within
+the short leg. `docs/memo.md`'s Results and Next Steps sections were
+updated with these exact numbers (2,048 -> 2,189 words, still inside the
+3-5 page target), and the third and final `![INSERT CHART: ...]`
+placeholder was replaced with the real
+`../results/charts/decile_returns.jpg`. Two new tests in
+`tests/test_detail.py` (`test_decile_returns_recovers_full_cross_section_not_just_traded_extremes`,
+`test_decile_summary_annualizes_via_geometric_compounding`, plus two edge-
+case tests) and two in `tests/test_report.py` (section present/absent).
+154/154 tests pass.
 
 ### Single Pipeline Entry Point (`src/run.py`, `src/_http.py`)
 

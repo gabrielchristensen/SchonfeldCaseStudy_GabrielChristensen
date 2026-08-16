@@ -4,6 +4,8 @@ import pytest
 import src.detail as detail_mod
 from src.detail import (
     benchmark_correlation,
+    decile_returns,
+    decile_summary,
     quarter_asset_detail,
     signal_diagnostics,
     subperiod_navs,
@@ -384,3 +386,108 @@ def test_signal_diagnostics_skips_quarters_with_no_scored_names(tmp_path):
         panel, mapping_df, prices, results, lag_days=60, cost_bps=10, history_path=history_path,
     )
     assert out.empty
+
+
+# --- decile_returns / decile_summary ----------------------------------------
+
+def test_decile_returns_recovers_full_cross_section_not_just_traded_extremes(tmp_path):
+    history_path = tmp_path / "sp500_history.csv"
+    pd.DataFrame(
+        [("2019-01-01", "TICKA,TICKB")], columns=["date", "tickers"]
+    ).to_csv(history_path, index=False)
+    mapping_df = pd.DataFrame({
+        "CUSIP": ["CUSIP001", "CUSIP002"],
+        "TICKER": ["TICKA", "TICKB"],
+        "NAME": ["A", "B"],
+    })
+    # CUSIP001: breadth 3 -> 1, raw_change=+2 (higher rank -> decile 1).
+    # CUSIP002: breadth 1 -> 1, raw_change=0 (lower rank -> decile 0).
+    rows = [
+        ("A1", "2020-05-10", "13F-HR", "CIK_A1", _SD_PERIOD, "CUSIP001", 100, 10),
+        ("A2", "2020-05-10", "13F-HR", "CIK_A2", _SD_PERIOD, "CUSIP001", 100, 10),
+        ("A3", "2020-05-10", "13F-HR", "CIK_A3", _SD_PERIOD, "CUSIP001", 100, 10),
+        ("P1", "2020-02-01", "13F-HR", "CIK_A1", _SD_PRIOR_PERIOD, "CUSIP001", 100, 10),
+        ("B1", "2020-05-10", "13F-HR", "CIK_B1", _SD_PERIOD, "CUSIP002", 100, 10),
+        ("P2", "2020-02-01", "13F-HR", "CIK_B1", _SD_PRIOR_PERIOD, "CUSIP002", 100, 10),
+    ]
+    panel = _sd_panel(rows)
+    as_of_date = pd.Timestamp("2020-06-01")
+    next_as_of_date = pd.Timestamp("2020-09-01")
+    prices = pd.DataFrame({
+        "date": [as_of_date, next_as_of_date] * 2,
+        "ticker": ["TICKA", "TICKA", "TICKB", "TICKB"],
+        "adj_close": [100, 110, 100, 90],
+    })
+    results = {
+        (60, 10): {
+            "quarters": [{
+                "period_of_report": pd.Timestamp(_SD_PERIOD),
+                "as_of_date": as_of_date,
+                "next_as_of_date": next_as_of_date,
+                "ic": float("nan"),
+            }]
+        }
+    }
+
+    out = decile_returns(
+        panel, mapping_df, prices, results, lag_days=60, cost_bps=10,
+        n_quantiles=2, history_path=history_path,
+    )
+
+    # Both deciles recovered -- quarter_pnl's results dict never persists
+    # anything about a middle/only-other decile, so this must come from
+    # re-scoring, not from `results`.
+    assert len(out) == 2
+    lo = out[out["decile"] == 0].iloc[0]
+    hi = out[out["decile"] == 1].iloc[0]
+    assert lo["holding_period_return"] == pytest.approx(-0.10)  # TICKB, lower rank
+    assert hi["holding_period_return"] == pytest.approx(0.10)   # TICKA, higher rank
+
+
+def test_decile_returns_skips_quarters_with_no_scored_names(tmp_path):
+    history_path = tmp_path / "sp500_history.csv"
+    pd.DataFrame([("2019-01-01", "TICKA")], columns=["date", "tickers"]).to_csv(history_path, index=False)
+    mapping_df = pd.DataFrame({"CUSIP": ["CUSIP001"], "TICKER": ["TICKA"], "NAME": ["A"]})
+    panel = _sd_panel([])  # empty panel -> nothing scores for any quarter
+    results = {
+        (60, 10): {
+            "quarters": [{
+                "period_of_report": pd.Timestamp(_SD_PERIOD),
+                "as_of_date": pd.Timestamp("2020-06-01"),
+                "next_as_of_date": pd.Timestamp("2020-09-01"),
+                "ic": float("nan"),
+            }]
+        }
+    }
+    prices = pd.DataFrame(columns=["date", "ticker", "adj_close"])
+
+    out = decile_returns(
+        panel, mapping_df, prices, results, lag_days=60, cost_bps=10, history_path=history_path,
+    )
+    assert out.empty
+
+
+def test_decile_summary_annualizes_via_geometric_compounding():
+    decile_df = pd.DataFrame([
+        {"period_of_report": pd.Timestamp("2020-03-31"), "decile": 0, "n_names": 5, "n_dropped": 0, "holding_period_return": 0.05},
+        {"period_of_report": pd.Timestamp("2020-06-30"), "decile": 0, "n_names": 5, "n_dropped": 0, "holding_period_return": 0.05},
+    ])
+
+    out = decile_summary(decile_df, n_quantiles=1)
+
+    assert len(out) == 1
+    row = out.iloc[0]
+    assert row["decile"] == 0
+    assert row["n_quarters"] == 2
+    assert row["mean_return"] == pytest.approx(0.05)
+    # Both quarters return exactly the same, so the geometric mean equals
+    # the simple mean here -- annualized = 1.05**4 - 1.
+    assert row["annualized_return"] == pytest.approx(1.05 ** 4 - 1)
+    assert row["pct_positive"] == pytest.approx(1.0)
+
+
+def test_decile_summary_empty_input_returns_empty_frame_with_expected_columns():
+    out = decile_summary(pd.DataFrame())
+
+    assert out.empty
+    assert list(out.columns) == ["decile", "n_quarters", "mean_return", "annualized_return", "pct_positive"]

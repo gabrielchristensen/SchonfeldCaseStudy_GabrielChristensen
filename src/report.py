@@ -13,15 +13,17 @@ Layout mirrors the case-study prompt's own evaluation criteria: a headline
 verdict + KPI row, a primary equity curve and drawdown (underwater) profile
 against both benchmarks, then the lag and cost sensitivity grids the prompt
 explicitly asks about (rebalancing timing / transaction costs) plus the full
-lag x cost grid those two slices
-are cut from, then turnover and universe-coverage as supporting
-diagnostics, then regime/attribution (per-era performance, benchmark
-correlation, top-contributor tickers -- the same analysis
-notebooks/regime_and_attribution.ipynb performs, surfaced here so a reader
-of the HTML report doesn't have to go find the notebook), then a disclosures
-section naming every caveat already surfaced in Phases 1-4, backed by real
-measured numbers where the data is available rather than qualitative-only
-prose.
+lag x cost grid those two slices are cut from, then a return-by-decile
+monotonicity check across the full 10-decile cross-section (not just the two
+traded extremes -- the one section that needs the full raw panel, not just
+committed artifacts; see src.detail.decile_returns), then turnover and
+universe-coverage as supporting diagnostics, then regime/attribution
+(per-era performance, benchmark correlation, top-contributor tickers -- the
+same analysis notebooks/regime_and_attribution.ipynb performs, surfaced here
+so a reader of the HTML report doesn't have to go find the notebook), then a
+disclosures section naming every caveat already surfaced in Phases 1-4,
+backed by real measured numbers where the data is available rather than
+qualitative-only prose.
 """
 
 import base64
@@ -359,6 +361,7 @@ def build_report(
     meta: dict | None = None,
     prices: pd.DataFrame | None = None,
     charts_dir: Path | None = None,
+    decile_df: pd.DataFrame | None = None,
 ) -> Path:
     """Renders `results` (src.backtest.run_backtest()'s output) to a
     self-contained HTML file at `out_path`. `meta` is an optional dict of
@@ -369,9 +372,14 @@ def build_report(
     `short_tickers`, true for any real backtest run), a Regime &
     attribution section is added via src.detail's already-tested,
     committed-artifact-only functions; when omitted, that section is
-    skipped entirely. Every chart is written as a standalone .jpg under
-    `charts_dir` (default: `out_path.parent / "charts"`) in addition to
-    being embedded inline.
+    skipped entirely. `decile_df` is the optional output of
+    `src.detail.decile_summary()` (one row per decile: annualized_return,
+    etc.) -- when supplied, a Return-by-decile section is added; unlike
+    every other optional section, this one needs the full raw panel to
+    compute (see `detail.decile_returns`' docstring), so it can't be
+    regenerated from committed artifacts alone. Every chart is written as
+    a standalone .jpg under `charts_dir` (default: `out_path.parent /
+    "charts"`) in addition to being embedded inline.
     """
     meta = meta or {}
     out_path = Path(out_path)
@@ -501,6 +509,34 @@ def build_report(
             "above -- darker blue is a higher Sharpe, darker red is lower/negative.</p>"
         )
         add(_grid_heatmap_table(results))
+
+    # --- Return by decile (needs the full raw panel; not derivable from
+    # committed artifacts alone -- see detail.decile_returns' docstring) ---
+    if decile_df is not None and not decile_df.empty:
+        add_heading("Return by decile")
+        add(
+            '<p class="meta">Average annualized holding-period return for all '
+            f"{N_QUANTILES} deciles of the primary ({PRIMARY_LAG_DAYS}d lag) cross-section, "
+            "not just the two the real strategy trades -- a monotonicity check on the full "
+            "sort, independent of the decile-portfolio construction and transaction costs "
+            "(none applied here, since only D1 and D10 are ever actually traded). Unlike "
+            "every other section on this page, this one needs the full raw panel to "
+            "compute (re-scores every closed quarter), so it can't be regenerated from "
+            "the committed backtest_results.pkl/prices.parquet alone.</p>"
+        )
+        deciles_sorted = decile_df.sort_values("decile")
+        labels = [
+            f"D{int(d) + 1}" + (" (short)" if d == 0 else " (long)" if d == N_QUANTILES - 1 else "")
+            for d in deciles_sorted["decile"]
+        ]
+        values = deciles_sorted["annualized_return"].tolist()
+        chart = _bar_chart(
+            labels, values,
+            title=f"Annualized return by decile ({PRIMARY_LAG_DAYS}d lag, full cross-section)",
+            ylabel="Annualized return", name="decile_returns", charts_dir=charts_dir,
+            bar_colors=[COLOR_GOOD if v > 0 else COLOR_BAD for v in values],
+        )
+        add(f'<div class="chart-card"><img src="{chart}" alt="return by decile"></div>')
 
     # --- Turnover --------------------------------------------------------
     if primary_key in results and results[primary_key]["quarters"]:
@@ -635,7 +671,13 @@ def build_report(
         "<li><strong>rf = 0</strong> for all Sharpe ratios -- no risk-free-rate series was sourced.</li>"
         "<li><strong>SPY / internal benchmark carry no simulated transaction costs</strong>; only the "
         "long-short strategy legs do.</li>"
-        "</ul></div>"
+        + (
+            "<li><strong>Return-by-decile section requires the full raw panel</strong> to regenerate "
+            "(re-scores every closed quarter's full cross-section) -- unlike every other section here, "
+            "it cannot be reproduced from the committed backtest_results.pkl/prices.parquet alone.</li>"
+            if decile_df is not None and not decile_df.empty else ""
+        )
+        + "</ul></div>"
     )
 
     toc_links = "".join(f'<a href="#{anchor}">{re.sub("<[^>]+>", "", html)}</a>' for anchor, html in sections if anchor)
@@ -656,6 +698,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results", default="data/processed/backtest_results.pkl")
     parser.add_argument("--prices", default="data/processed/prices.parquet")
+    parser.add_argument(
+        "--panel", default="data/processed/13f_panel_full.parquet",
+        help=(
+            "Optional full 13F panel. If present (and --prices resolves), adds a "
+            "Return-by-decile section -- re-scores the full 10-decile cross-section "
+            "each closed quarter, not just the two the real strategy trades. Unlike "
+            "every other section, this needs the raw panel, not just the committed "
+            "backtest/price artifacts (same dependency as `src.ingest --full`)."
+        ),
+    )
     parser.add_argument("--out", default=str(DEFAULT_OUT_PATH))
     args = parser.parse_args()
 
@@ -671,7 +723,28 @@ def main() -> None:
     else:
         print(f"Note: {prices_path} not found -- skipping the Regime & attribution section.")
 
-    out_path = build_report(results, out_path=Path(args.out), meta=meta, prices=prices)
+    decile_df = None
+    panel_path = Path(args.panel)
+    if panel_path.exists() and prices is not None:
+        from src import mapping as mapping_mod
+        from src import universe
+        from src.backtest import PANEL_COLUMNS, PRIMARY_LAG_DAYS, prepare_panel
+        from src.detail import decile_returns, decile_summary
+
+        print(f"Loading {panel_path} for the Return-by-decile section...")
+        panel = pd.read_parquet(panel_path, columns=PANEL_COLUMNS)
+        panel = prepare_panel(panel)
+        mapping_df = mapping_mod.load_cusip_ticker_map()
+        passive_ciks = universe.passive_manager_ciks()
+        raw_decile = decile_returns(
+            panel, mapping_df, prices, results, PRIMARY_LAG_DAYS,
+            cost_bps=PRIMARY_COST_BPS, passive_ciks=passive_ciks,
+        )
+        decile_df = decile_summary(raw_decile)
+    else:
+        print(f"Note: {panel_path} not found -- skipping the Return-by-decile section.")
+
+    out_path = build_report(results, out_path=Path(args.out), meta=meta, prices=prices, decile_df=decile_df)
     print(f"Report written -> {out_path}")
 
 

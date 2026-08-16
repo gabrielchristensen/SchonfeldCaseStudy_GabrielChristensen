@@ -74,6 +74,14 @@ def _fake_prices():
     return pd.DataFrame(rows)
 
 
+def _fake_decile_df():
+    return pd.DataFrame([
+        {"decile": i, "n_quarters": 10, "mean_return": 0.01 * (i - 4.5),
+         "annualized_return": 0.02 * (i - 4.5), "pct_positive": 0.5}
+        for i in range(10)
+    ])
+
+
 def test_build_report_writes_self_contained_html_with_no_external_refs(tmp_path):
     out_path = tmp_path / "report.html"
 
@@ -132,6 +140,28 @@ def test_build_report_includes_expected_sections_and_stats(tmp_path):
     assert "Known limitations" in html
     assert "still open" in html  # open-quarter disclosure
     assert "Headline:" in html  # verdict callout
+
+
+def test_build_report_adds_decile_section_when_decile_df_supplied(tmp_path):
+    out_path = tmp_path / "report.html"
+
+    build_report(_fake_results(), out_path=out_path, decile_df=_fake_decile_df())
+    html = out_path.read_text()
+
+    assert "Return by decile" in html
+    assert "requires the full raw panel" in html  # disclosure bullet
+    charts_dir = tmp_path / "charts"
+    assert any(p.name == "decile_returns.jpg" for p in charts_dir.glob("*.jpg"))
+
+
+def test_build_report_skips_decile_section_without_decile_df(tmp_path):
+    out_path = tmp_path / "report.html"
+
+    build_report(_fake_results(), out_path=out_path)
+    html = out_path.read_text()
+
+    assert "Return by decile" not in html
+    assert "requires the full raw panel" not in html
 
 
 def test_build_report_adds_regime_section_when_prices_supplied(tmp_path):

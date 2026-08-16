@@ -7,6 +7,12 @@ artifacts (`backtest_results.pkl` + `prices.parquet`), with no re-run of
 the expensive full backtest and no changes to `backtest.py`'s tested
 core (`quarter_pnl`/`leg_nav`/`run_backtest` are untouched).
 
+`decile_returns`/`decile_summary` are the one exception to the "no panel
+re-run" rule above, same as `signal_diagnostics`: recovering the middle
+deciles' membership (only the top/bottom deciles are ever persisted as
+`long_tickers`/`short_tickers`) requires re-scoring each quarter, so they
+need the full raw panel, disclosed in their own docstrings.
+
 `_leg_returns` intentionally re-implements `backtest.leg_nav`'s exact
 price-windowing convention (ffill, drop a ticker missing at the window's
 first available row) rather than calling it, since `leg_nav` only ever
@@ -41,8 +47,8 @@ import pandas as pd
 from src import factor
 from src import mapping as mapping_mod
 from src import universe
-from src.backtest import LAG_DAYS_GRID, PRIMARY_COST_BPS
-from src.backtest import _stitch, apply_transaction_costs, performance_stats
+from src.backtest import LAG_DAYS_GRID, N_QUANTILES, PRIMARY_COST_BPS
+from src.backtest import _stitch, apply_transaction_costs, assign_deciles, performance_stats
 from src.backtest import leg_nav as _tested_leg_nav
 
 _RECONCILE_ATOL = 1e-9
@@ -373,6 +379,114 @@ def signal_diagnostics(
             "zscore_signal_kurtosis": float(scored["zscore_signal"].kurtosis()),
         })
     return pd.DataFrame(rows)
+
+
+def decile_returns(
+    panel: pd.DataFrame,
+    mapping_df: pd.DataFrame,
+    prices: pd.DataFrame,
+    results: dict,
+    lag_days: int,
+    *,
+    cost_bps: float = PRIMARY_COST_BPS,
+    n_quantiles: int = N_QUANTILES,
+    passive_ciks: set[str] | None = None,
+    history_path: Path = universe.DEFAULT_HISTORY_PATH,
+) -> pd.DataFrame:
+    """Per-closed-quarter, per-decile equal-weight holding-period return,
+    for ALL n_quantiles deciles -- not just the two the real backtest
+    actually trades.
+
+    `quarter_pnl()` only ever returns the top decile's tickers as
+    `long_tickers` and the bottom decile's as `short_tickers` (nothing
+    else is tradable in the real strategy), so the middle deciles'
+    membership was never persisted to `backtest_results.pkl`. This
+    re-scores each closed quarter via `factor.breadth_momentum` to
+    recover it -- needs the full panel, NOT purely derivable from
+    committed artifacts, same disclosed dependency as `signal_diagnostics`
+    above (and the README's `--full` reproduction path).
+
+    Reuses the real backtest's own holding-period boundaries
+    (`results[...]["quarters"]`'s as_of_date/next_as_of_date) and its own
+    `assign_deciles`/`leg_nav` -- this is NOT a second decile-level
+    backtest with its own turnover/cost accounting. It answers "is the
+    cross-section monotonic in expectation," not "what would decile N
+    have returned as a standalone traded strategy" -- no transaction
+    costs are applied here, matching the fact that only deciles 0 and
+    n_quantiles-1 are ever actually traded.
+
+    One row per (period_of_report, decile): n_names, n_dropped,
+    holding_period_return. A decile with no usable price data for a
+    quarter (leg_nav's whole-decile drop case) is simply absent from that
+    quarter's rows, not imputed -- the same "drop, don't impute" policy
+    the rest of the pipeline uses.
+    """
+    quarters = results[(lag_days, cost_bps)]["quarters"]
+    rows = []
+    for q in quarters:
+        period_of_report = q["period_of_report"]
+        as_of_date = q["as_of_date"]
+        next_as_of_date = q["next_as_of_date"]
+        scored = factor.breadth_momentum(
+            panel, period_of_report, as_of_date, mapping_df,
+            passive_ciks=passive_ciks, history_path=history_path,
+        )
+        if scored.empty:
+            continue
+        scored = scored.copy()
+        scored["TICKER"] = mapping_mod.cusip_to_ticker(scored["CUSIP"], mapping_df)
+        scored = scored.dropna(subset=["TICKER"])
+        if scored.empty:
+            continue
+        scored = assign_deciles(scored, n_quantiles)
+        for decile in sorted(scored["decile"].dropna().unique()):
+            tickers = set(scored.loc[scored["decile"] == decile, "TICKER"])
+            nav, dropped = _tested_leg_nav(prices, tickers, as_of_date, next_as_of_date)
+            if nav.empty:
+                continue
+            rows.append({
+                "period_of_report": period_of_report,
+                "decile": int(decile),
+                "n_names": len(tickers),
+                "n_dropped": len(dropped),
+                "holding_period_return": float(nav.iloc[-1] / nav.iloc[0] - 1),
+            })
+    return pd.DataFrame(rows)
+
+
+def decile_summary(
+    decile_df: pd.DataFrame, *, n_quantiles: int = N_QUANTILES, periods_per_year: float = 4.0,
+) -> pd.DataFrame:
+    """Aggregates `decile_returns()`'s per-quarter rows into one row per
+    decile: n_quarters, mean_return (arithmetic), annualized_return, and
+    pct_positive.
+
+    annualized_return compounds the GEOMETRIC mean quarterly return to
+    `periods_per_year` (default 4, since holding periods are quarterly) --
+    the same compounding convention `performance_stats()` uses at the
+    daily level, applied here to quarterly buckets since these deciles
+    were never stitched into one continuous NAV curve the way the two
+    actually-traded extremes are.
+    """
+    columns = ["decile", "n_quarters", "mean_return", "annualized_return", "pct_positive"]
+    if decile_df.empty:
+        return pd.DataFrame(columns=columns)
+    rows = []
+    for decile in range(n_quantiles):
+        sub = decile_df[decile_df["decile"] == decile]
+        if sub.empty:
+            continue
+        rets = sub["holding_period_return"]
+        n = len(rets)
+        geo_mean = (1 + rets).prod() ** (1 / n) - 1
+        rows.append({
+            "decile": decile,
+            "n_quarters": n,
+            "mean_return": float(rets.mean()),
+            "annualized_return": float((1 + geo_mean) ** periods_per_year - 1),
+            "pct_positive": float((rets > 0).mean()),
+        })
+    return pd.DataFrame(rows, columns=columns)
 
 
 def main() -> None:
