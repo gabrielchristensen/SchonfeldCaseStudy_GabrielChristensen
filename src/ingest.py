@@ -257,17 +257,30 @@ def _clean_infotable(df: pd.DataFrame) -> pd.DataFrame:
     With min_count=1, a group needs at least one real number to sum to
     anything other than NaN, so a data-quality failure stays visible as NaN
     instead of silently becoming a fake zero.
+
+    Calls groupby(...)[cols].sum(min_count=1) directly -- NOT
+    .agg(col=(col, lambda s: s.sum(min_count=1))). The lambda form routes
+    through pandas' "pure Python" per-group aggregation fallback (custom
+    callables can't use the cython-optimized path), which real testing
+    found to be both a severe performance problem (measured on a real
+    ~1.8M-row dataset: 77s, vs. 0.36s for the form below -- >200x) and,
+    on at least one real Windows environment, an outright crash deep in
+    pandas 3.0.5's internals (`TypeError: 'slice' object is not callable`
+    inside groupby's __finalize__, not reproducible on Linux with the
+    same pandas version and the same file, but avoided entirely by never
+    exercising that code path). The optimized form below produces
+    verified byte-identical output (`pd.testing.assert_frame_equal`
+    against the lambda form, on real data) while sidestepping both
+    problems, since min_count is natively supported by groupby's own
+    sum().
     """
     df = df.copy()
     df["VALUE"] = pd.to_numeric(df["VALUE"], errors="coerce") #NaN if error
     df["SSHPRNAMT"] = pd.to_numeric(df["SSHPRNAMT"], errors="coerce")
     df["CUSIP"] = df["CUSIP"].str.strip().str.upper()
     return (
-        df.groupby(["ACCESSION_NUMBER", "CUSIP"], as_index=False) #one row per security per filing
-        .agg( #aggregates value and quantity 
-            VALUE=("VALUE", lambda s: s.sum(min_count=1)),
-            SSHPRNAMT=("SSHPRNAMT", lambda s: s.sum(min_count=1)),
-        )
+        df.groupby(["ACCESSION_NUMBER", "CUSIP"], as_index=False)[["VALUE", "SSHPRNAMT"]]
+        .sum(min_count=1)
     )
 
 
