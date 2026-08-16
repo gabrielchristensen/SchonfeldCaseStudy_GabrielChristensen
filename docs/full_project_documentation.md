@@ -126,7 +126,27 @@ every later phase (`mapping.py`'s `checkpoint_path`, `backtest.py`'s
 ### 1.3 Methodology & Math
 
 This section states every formula the pipeline actually computes, in
-the order data flows through it.
+the order data flows through it. Start here for the parameter values
+themselves; the rest of this section derives every one of them from
+source.
+
+#### Parameters at a glance
+
+| Parameter | Value |
+|---|---|
+| Signal | Ownership breadth momentum: `raw_change = breadth(t) - breadth(t-1)`, both terms evaluated at the same `as_of_date` |
+| Standardization | `rank_signal` (percentile rank, primary) + `zscore_signal` (secondary, not winsorized) |
+| Equity universe | S&P 500, point-in-time membership |
+| Holder universe | All 13F filers minus 14 curated passive-manager CIKs |
+| Formation lag | 45 / 60 / 90 calendar days after quarter-end (swept; primary = 60d) |
+| **Rebalancing frequency** | **Quarterly, at each formation date** |
+| **Rebalancing mechanics** | **Full reconstitution to new deciles at each formation date; no intra-quarter trading; daily mark-to-market NAV between rebalances** |
+| Portfolio construction | 10 deciles on `rank_signal`; long = top decile, short = bottom decile; equal-weight within each leg |
+| Transaction costs | 0 / 5 / 10 / 25 bps one-way (swept; primary = 10bps), charged on turnover at each rebalance |
+| Price source | yfinance daily adjusted close |
+| Benchmarks | SPY; internal equal-weight full-resolvable-universe portfolio |
+| Backtest window | 2015-09-30 to 2026-03-31 (auto-detected start — first quarter reaching ≥300 scored names) |
+| Risk-free rate | 0 (no series sourced) |
 
 #### Point-in-time snapshot (`pit.as_of_snapshot`)
 

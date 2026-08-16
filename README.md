@@ -21,11 +21,25 @@ cd SchonfeldCaseStudy_GabrielChristensen
 source .venv/bin/activate
 ```
 
-**Windows:** `setup.sh` needs a POSIX shell — it does not run under
-native `cmd`/PowerShell. Use **WSL** (recommended — ships `python3` out
-of the box) or **Git Bash** (works too, but only if your Windows Python
-install put `python3` or `python` on Git Bash's `PATH` — `setup.sh`
-checks for either):
+**Windows (recommended — plain, native, no extra software):** confirm
+your Python first, then set up the venv manually:
+```bash
+python --version
+```
+Confirm the output is ≥3.10 (ideally 3.12.3), then:
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+This is the actual environment this project was validated against on
+Windows during development — plain `cmd`/PowerShell, nothing else
+required.
+
+**Windows (alternative)**: `setup.sh` runs `python --version`'s check
+for you automatically, but needs a POSIX shell — **WSL** (ships
+`python3` out of the box) or **Git Bash** (works too, but only if your
+Windows Python install put `python3` or `python` on Git Bash's `PATH`):
 ```bash
 git clone <repo-url>
 cd SchonfeldCaseStudy_GabrielChristensen
@@ -35,18 +49,12 @@ source .venv/bin/activate
 WSL install: https://learn.microsoft.com/windows/wsl/install — Git Bash
 ships with Git for Windows: https://git-scm.com/download/win
 
-**Manual setup** (any OS, skips `setup.sh`'s Python-version check — confirm
-you're on ≥3.10, ideally 3.12.3, yourself first). macOS / Linux / WSL /
-Git Bash:
+**Manual setup on macOS / Linux / WSL / Git Bash** (skips `setup.sh`'s
+Python-version check — confirm you're on ≥3.10, ideally 3.12.3, yourself
+first):
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-```
-Windows native (`cmd` or PowerShell):
-```bash
-python -m venv .venv
-.venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
