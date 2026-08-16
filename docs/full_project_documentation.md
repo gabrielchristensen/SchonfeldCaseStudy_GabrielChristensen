@@ -663,6 +663,14 @@ could only reason about, not reproduce directly.
    and **>200x faster** (77.3s → 0.36s for that file; both real problem
    datasets now complete in ~2-3s each, full pipeline included).
 
+**Confirmed end to end**: after this fix, the user re-ran the full
+`--full` ingest (all ~53 datasets) on the same Windows machine that
+originally hit every issue in this section, start to finish, no further
+failures. Every item above was found via real testing on the platform
+that actually broke, fixed, verified as far as this environment could
+verify it, and then confirmed again on that same real machine — not
+assumed fixed after landing a plausible-looking change.
+
 ---
 
 ## 3. Defense Quick-Reference Index
