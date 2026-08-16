@@ -375,6 +375,97 @@ def test_download_dataset_accepts_full_url(tmp_path, monkeypatch):
     assert dest.read_bytes() == b"zip-bytes"
 
 
+class _StatusResponse:
+    """Mimics a real requests.Response closely enough for retry testing:
+    raise_for_status() raises HTTPError with .response set to self, the
+    way the real requests library does -- _get_with_retry inspects that
+    attribute to decide whether a status is retryable."""
+
+    def __init__(self, status_code: int, content: bytes = b"", text: str = ""):
+        self.status_code = status_code
+        self.content = content
+        self.text = text
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            err = requests.exceptions.HTTPError(f"{self.status_code} Error")
+            err.response = self
+            raise err
+
+
+def test_download_dataset_retries_on_connection_error(tmp_path, monkeypatch):
+    # A real transient network failure (the same class of bug that killed
+    # an unattended mapping.py build, per that module's own regression
+    # test) must not kill an unattended --full ingest run either.
+    calls = []
+
+    def fake_get(url, headers, timeout):
+        calls.append(1)
+        if len(calls) == 1:
+            raise requests.exceptions.ConnectionError("No route to host")
+        return _FakeResponse(content=b"zip-bytes")
+
+    monkeypatch.setattr("src.ingest.requests.get", fake_get)
+    monkeypatch.setattr("src.ingest.time.sleep", lambda s: None)
+
+    dest = download_dataset("ds1_form13f.zip", dest_dir=tmp_path / "raw")
+
+    assert len(calls) == 2
+    assert dest.read_bytes() == b"zip-bytes"
+
+
+def test_list_datasets_retries_on_429(monkeypatch):
+    calls = []
+    html = '<a href="/files/structureddata/data/form-13f-data-sets/2013q2_form13f.zip">2013q2</a>'
+
+    def fake_get(url, headers, timeout):
+        calls.append(1)
+        if len(calls) == 1:
+            return _StatusResponse(429)
+        return _StatusResponse(200, text=html)
+
+    monkeypatch.setattr("src.ingest.requests.get", fake_get)
+    monkeypatch.setattr("src.ingest.time.sleep", lambda s: None)
+
+    result = list_datasets()
+
+    assert len(calls) == 2
+    assert result == ["https://www.sec.gov/files/structureddata/data/form-13f-data-sets/2013q2_form13f.zip"]
+
+
+def test_download_dataset_raises_after_exhausting_retries(tmp_path, monkeypatch):
+    def always_fails(url, headers, timeout):
+        raise requests.exceptions.ConnectionError("No route to host")
+
+    monkeypatch.setattr("src.ingest.requests.get", always_fails)
+    monkeypatch.setattr("src.ingest.time.sleep", lambda s: None)
+
+    with pytest.raises(requests.exceptions.ConnectionError):
+        download_dataset("ds1_form13f.zip", dest_dir=tmp_path / "raw")
+
+    # Never silently swallowed, and no partial/corrupt file left behind.
+    assert not (tmp_path / "raw" / "ds1_form13f.zip").exists()
+    assert not (tmp_path / "raw" / "ds1_form13f.zip.part").exists()
+
+
+def test_download_dataset_does_not_retry_on_404(tmp_path, monkeypatch):
+    # A permanent client error must fail fast, not burn through 5 retries
+    # and a minute of backoff sleeps for something retrying can never fix.
+    calls = []
+
+    def fake_get(url, headers, timeout):
+        calls.append(1)
+        return _StatusResponse(404)
+
+    monkeypatch.setattr("src.ingest.requests.get", fake_get)
+    monkeypatch.setattr("src.ingest.time.sleep", lambda s: None)
+
+    with pytest.raises(requests.exceptions.HTTPError):
+        download_dataset("missing_form13f.zip", dest_dir=tmp_path / "raw")
+
+    assert len(calls) == 1
+
+
 _SAMPLE_SUBMISSION_TSV = (
     "ACCESSION_NUMBER\tFILING_DATE\tSUBMISSIONTYPE\tCIK\tPERIODOFREPORT\n"
     "A1\t31-MAY-2013\t13F-HR\t1\t31-MAR-2013\n"

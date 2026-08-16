@@ -73,6 +73,50 @@ def _headers() -> dict:
     return {"User-Agent": USER_AGENT}
 
 
+def _get_with_retry(url: str, *, timeout: int, max_attempts: int = 5) -> requests.Response:
+    """GET with exponential-backoff retry on transient failures --
+    connection errors/timeouts and 429/5xx -- mirroring
+    mapping.py::_post_with_retry's proven pattern (same fixed 5s/10s/
+    20s/40s schedule, no rate-limit headers to compute a precise backoff
+    from). A prior unresilient version of this exact call pattern
+    (mapping.py's OpenFIGI POST) was killed mid-run by a real transient
+    "No route to host" with zero recovery -- ingest.py's own downloads
+    have the same risk profile (dozens of sequential network calls, a
+    long unattended run) and, until now, none of this resilience.
+
+    Also prints on every retry (mapping.py's version doesn't) and lets
+    any failure that survives every attempt propagate as a normal
+    exception -- never silently swallowed, always visible with which
+    URL and how many attempts it took.
+    """
+    delay = 5
+    for attempt in range(max_attempts):
+        try:
+            resp = requests.get(url, headers=_headers(), timeout=timeout)
+            resp.raise_for_status()
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+            if attempt == max_attempts - 1:
+                raise
+            print(f"  {exc.__class__.__name__} fetching {url}, retrying in {delay}s "
+                  f"(attempt {attempt + 1}/{max_attempts})...")
+        except requests.exceptions.HTTPError as exc:
+            # A genuine client error (404, ...) is permanent, not transient
+            # -- only retry a status this specific (429/5xx), and only if
+            # the status is actually determinable (a response we can't
+            # inspect gets re-raised immediately, same as any other
+            # unretryable failure).
+            status = getattr(exc.response, "status_code", None)
+            if attempt == max_attempts - 1 or status is None or (status != 429 and status < 500):
+                raise
+            print(f"  HTTP {status} fetching {url}, retrying in {delay}s "
+                  f"(attempt {attempt + 1}/{max_attempts})...")
+        else:
+            return resp
+        time.sleep(delay)
+        delay *= 2
+    raise RuntimeError("unreachable")  # pragma: no cover
+
+
 def list_datasets() -> list[str]:
     """Scrape the SEC index page for every available dataset's full URL.
 
@@ -83,12 +127,13 @@ def list_datasets() -> list[str]:
     use of urljoin in case of relative link
 
     use of set to avoid duplicates
-    
+
     """
-    resp = requests.get(SEC_INDEX_URL, headers=_headers(), timeout=30)
-    resp.raise_for_status() #Throw exception if failure on status code (ex: 404)
+    resp = _get_with_retry(SEC_INDEX_URL, timeout=30)
     hrefs = re.findall(r'href="([^"]*_form13f\.zip)"', resp.text, re.I)
-    return sorted({urljoin(SEC_INDEX_URL, href) for href in hrefs})
+    datasets = sorted({urljoin(SEC_INDEX_URL, href) for href in hrefs})
+    print(f"Found {len(datasets)} datasets on SEC's index page.")
+    return datasets
 
 
 def download_dataset(url_or_filename: str, dest_dir: Path = RAW_DIR, *, force: bool = False) -> Path:
@@ -107,11 +152,12 @@ def download_dataset(url_or_filename: str, dest_dir: Path = RAW_DIR, *, force: b
     dest = dest_dir / filename #join a directory path with a filename.
     if dest.exists() and not force:
         return dest
-    resp = requests.get(url, headers=_headers(), timeout=180) #Bigger timeout margins because the zipfiles are bigger
-    resp.raise_for_status() 
+    print(f"  downloading {filename}...")
+    resp = _get_with_retry(url, timeout=180) #Bigger timeout margins because the zipfiles are bigger
     tmp = dest.with_suffix(dest.suffix + ".part") #creates file as .part
-    tmp.write_bytes(resp.content)   
+    tmp.write_bytes(resp.content)
     tmp.replace(dest)  # atomic on same filesystem
+    print(f"  downloaded {filename} ({dest.stat().st_size:,} bytes)")
     time.sleep(0.2)  # polite spacing; nowhere near the 10 req/sec SEC fair-access limit
     return dest
 
@@ -247,12 +293,17 @@ def build_raw_panel(
     ends up represented in two datasets at that boundary.
     """
     frames = []
-    for filename in filenames:
-        zip_path = download_dataset(filename, dest_dir)
-        checkpoint_path = checkpoint_dir / f"{zip_path.stem}.parquet" if checkpoint_dir else None
+    n = len(filenames)
+    for i, filename in enumerate(filenames, start=1):
+        short_name = filename.rsplit("/", 1)[-1]
+        checkpoint_path = checkpoint_dir / f"{Path(short_name).stem}.parquet" if checkpoint_dir else None
         if checkpoint_path is not None and checkpoint_path.exists():
+            print(f"[{i}/{n}] {short_name}: using cached checkpoint")
             frames.append(pd.read_parquet(checkpoint_path))
             continue
+        print(f"[{i}/{n}] {short_name}")
+        zip_path = download_dataset(filename, dest_dir)
+        print(f"  parsing {short_name}...")
         tables = parse_dataset(zip_path)
         submission = _clean_submission(tables["submission"])
         infotable = _clean_infotable(tables["infotable"])
@@ -294,7 +345,9 @@ def main() -> None:
         filenames = ["2013q2_form13f.zip", "2015q1_form13f.zip", "01mar2026-31may2026_form13f.zip"]
         out_path = Path("data/processed/13f_panel_sample.parquet")
         checkpoint_dir = None
+        print(f"Validation sample: {len(filenames)} datasets.")
 
+    print("Starting ingest...")
     panel = build_raw_panel(filenames, checkpoint_dir=checkpoint_dir)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     panel.to_parquet(out_path)
