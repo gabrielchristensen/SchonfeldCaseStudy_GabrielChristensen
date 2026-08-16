@@ -25,6 +25,7 @@ reference on its own.
    - [Phase 3 — Ownership Breadth Momentum Factor](#phase-3--ownership-breadth-momentum-factor)
    - [Phase 4 — Backtest, Report, and Analysis](#phase-4--backtest-report-and-analysis)
    - [Cross-Platform Reproducibility Hardening](#cross-platform-reproducibility-hardening)
+   - [Signal and Benchmark Diagnostics](#signal-and-benchmark-diagnostics-srcdetailpy-notebookssignal_and_benchmark_diagnosticsipynb)
 3. [Defense Quick-Reference Index](#3-defense-quick-reference-index)
 
 ---
@@ -690,6 +691,48 @@ failures. Every item above was found via real testing on the platform
 that actually broke, fixed, verified as far as this environment could
 verify it, and then confirmed again on that same real machine — not
 assumed fixed after landing a plausible-looking change.
+
+### Signal and Benchmark Diagnostics (`src/detail.py`, `notebooks/signal_and_benchmark_diagnostics.ipynb`)
+
+Analytical completeness added on top of the unchanged primary model:
+a rank-vs-z-score comparison, benchmark correlation, and seaborn-based
+visualization (new dependency, `seaborn==0.13.2`).
+
+**Verified before designing anything**: `pd.qcut` (decile assignment)
+is invariant to any strictly monotonic transform of its sort key, and
+`rank_signal`/`zscore_signal` are both monotonic transforms of the same
+`raw_change` — confirmed on real data (392 names, 0 differing decile
+assignments) that sorting on z-score instead of rank would produce a
+**portfolio-identical** backtest, not a meaningful comparison. Redesigned
+around where the standardization choice actually differs: `rank_signal`
+is uniform on [0,1] by construction; `zscore_signal` is un-winsorized and
+reflects `raw_change`'s real shape. `detail.signal_diagnostics` computes
+a per-quarter **Pearson** correlation using `zscore_signal` (magnitude-
+sensitive) against the already-stored **Spearman** rank-IC (order-only)
+— on the real data these ran at mean 0.026 vs. 0.016, correlated at 0.87
+with each other. Needs the local full panel (re-scores each quarter via
+`factor.breadth_momentum`), same disclosed dependency as `--full`.
+
+`detail.benchmark_correlation` is fully derived from the already-
+committed `backtest_results.pkl` (no panel, no re-run): correlation,
+beta, and rolling correlation of the strategy's daily returns against
+SPY and the internal universe benchmark. Real result: beta ≈ -0.02 vs.
+SPY, -0.19 vs. the internal universe — near-market-neutral, as expected
+for a long-short spread.
+
+The notebook also renders a **lag × cost Sharpe heatmap** — all 12
+`(lag_days, cost_bps)` combinations were already computed and committed
+from the original run, so this is `performance_stats` applied to
+already-stored data, not a re-run.
+
+**`backtest.run_backtest()` progress printing**: it had zero `print()`
+calls in its actual grid loop (all of `main()`'s prints happen before/
+after `run_backtest()` is called) — the same gap `ingest.py` had before
+this session's fix, for the same reason (a multi-minute operation with
+no output is indistinguishable from a hang). Verified as a pure
+print-only change: re-ran the real full backtest and confirmed every
+closed-quarter number came back bit-for-bit identical to what was
+already committed, only the `generated` timestamp differed.
 
 ---
 
