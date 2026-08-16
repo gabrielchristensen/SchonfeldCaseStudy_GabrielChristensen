@@ -1,6 +1,7 @@
 import pandas as pd
+import pytest
 
-from src.backtest import COST_BPS_GRID, LAG_DAYS_GRID, performance_stats
+from src.backtest import COST_BPS_GRID, LAG_DAYS_GRID, PRIMARY_COST_BPS, PRIMARY_LAG_DAYS, performance_stats
 from src.report import _drawdown, _stats_table, build_report
 
 
@@ -187,6 +188,73 @@ def test_build_report_adds_regime_section_when_prices_supplied(tmp_path):
     assert "Attribution" in html
     # The deliberately-unpriced ticker's drop should be reflected in the coverage disclosure.
     assert "ticker-quarter" in html
+
+
+def test_build_report_renders_both_2way_and_3way_subperiod_splits(tmp_path):
+    out_path = tmp_path / "report.html"
+
+    build_report(_fake_results(), out_path=out_path, prices=_fake_prices())
+    html = out_path.read_text()
+
+    assert "Sub-period detail (2-way split)" in html
+    assert "Sub-period detail (3-way split)" in html
+    charts_dir = tmp_path / "charts"
+    saved = {p.name for p in charts_dir.glob("*.jpg")}
+    assert "regime_equity.jpg" in saved
+    assert "regime_equity_3way.jpg" in saved
+
+
+def test_build_report_attribution_uses_sign_adjusted_spread_contribution(tmp_path, monkeypatch):
+    # A short position that RISES hurts the spread and must show up as a
+    # NEGATIVE bar -- the pre-fix code summed the unsigned `contribution`
+    # column and would have shown this as positive instead. Build a
+    # minimal, unambiguous fixture: one long ticker up 10% (helps spread),
+    # one short ticker up 50% (a short that rose -- hurts the spread a lot).
+    out_path = tmp_path / "report.html"
+    as_of = pd.Timestamp("2020-05-30")
+    next_as_of = pd.Timestamp("2020-08-28")
+    quarters = [{
+        "period_of_report": pd.Timestamp("2020-03-31"),
+        "as_of_date": as_of, "next_as_of_date": next_as_of,
+        "spread_nav": _nav([1.0, 1.0]),
+        "turnover_long": 1.0, "turnover_short": 1.0, "ic": 0.0,
+        "long_tickers": {"LLONG"}, "short_tickers": {"SSHORT"},
+        "n_names": 2, "dropped": set(),
+    }]
+    ic_series = pd.Series({quarters[0]["period_of_report"]: 0.0})
+    results = {
+        (PRIMARY_LAG_DAYS, PRIMARY_COST_BPS): {
+            "spread_nav": _nav([1.0, 1.005]), "universe_nav": _nav([1.0, 1.01]), "spy_nav": _nav([1.0, 1.02]),
+            "ic_series": ic_series, "quarters": quarters, "open_quarters": [],
+        }
+    }
+    prices = pd.DataFrame([
+        {"ticker": "LLONG", "date": as_of, "adj_close": 100.0},
+        {"ticker": "LLONG", "date": next_as_of, "adj_close": 110.0},
+        {"ticker": "SSHORT", "date": as_of, "adj_close": 100.0},
+        {"ticker": "SSHORT", "date": next_as_of, "adj_close": 150.0},
+    ])
+
+    captured = {}
+    import src.report as report_mod
+    real_bar_chart = report_mod._bar_chart
+
+    def spy_bar_chart(labels, values, **kwargs):
+        if kwargs.get("name") == "regime_top_contributors":
+            captured["labels"] = labels
+            captured["values"] = values
+        return real_bar_chart(labels, values, **kwargs)
+
+    monkeypatch.setattr(report_mod, "_bar_chart", spy_bar_chart)
+
+    build_report(
+        results, out_path=out_path, prices=prices,
+        meta={}, charts_dir=tmp_path / "charts",
+    )
+
+    by_ticker = dict(zip(captured["labels"], captured["values"]))
+    assert by_ticker["LLONG"] == pytest.approx(0.10)   # up 10% while long -> helped the spread
+    assert by_ticker["SSHORT"] == pytest.approx(-0.50)  # up 50% while short -> hurt the spread badly
 
 
 def test_build_report_skips_regime_section_without_prices(tmp_path):

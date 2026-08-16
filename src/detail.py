@@ -107,6 +107,25 @@ def quarter_asset_detail(
     project's disclosed "drop, don't impute" convention, made explicit
     here rather than silently omitted from the export.
 
+    Two contribution columns, deliberately not one, because they answer
+    different questions: `contribution` (`leg_weight * asset_return`) is
+    this ticker's contribution to *its own leg's* return -- always
+    same-signed as `asset_return`, regardless of which leg it's in.
+    `spread_contribution` is this ticker's signed impact on the actual
+    **spread** return (`spread_ret = long_ret - short_ret`): identical to
+    `contribution` for a long-leg ticker, but negated for a short-leg one,
+    since a short position that *rises* subtracts from the spread. A
+    caller attributing spread performance (e.g. "top contributors to
+    spread return") must use `spread_contribution`, not `contribution` --
+    an earlier version of `src/report.py`'s Attribution chart used the
+    unsigned `contribution` for exactly this and got it backwards for
+    every short-leg name that ever appeared in its top-10 (verified: NVDA,
+    MU, AMD, INTC, WDC, CAT, LLY, and META all sat in both legs across
+    different quarters in the real committed data, so the bug wasn't a
+    rare edge case -- it touched the whole top-10 list, and it was
+    silently hiding real top detractors like QCOM/DAL/FCX that got
+    partially cancelled out by the sign error).
+
     Raises ValueError, per leg per quarter, if either (a) `_leg_returns`'
     dropped-ticker set disagrees with `backtest.leg_nav`'s own, or (b) the
     per-ticker-implied leg return doesn't match `leg_nav`'s actual NAV
@@ -155,17 +174,19 @@ def quarter_asset_detail(
                             "ticker": ticker, "leg": leg,
                             "start_price": float("nan"), "end_price": float("nan"),
                             "asset_return": float("nan"), "dropped": True,
-                            "leg_weight": 0.0, "contribution": 0.0,
+                            "leg_weight": 0.0, "contribution": 0.0, "spread_contribution": 0.0,
                         })
                     else:
                         r = float(asset_return[ticker])
+                        contribution = weight * r
                         rows.append({
                             "lag_days": lag_days, "period_of_report": q["period_of_report"],
                             "as_of_date": as_of_date, "next_as_of_date": next_as_of_date,
                             "ticker": ticker, "leg": leg,
                             "start_price": float(start_px[ticker]), "end_price": float(end_px[ticker]),
                             "asset_return": r, "dropped": False,
-                            "leg_weight": weight, "contribution": weight * r,
+                            "leg_weight": weight, "contribution": contribution,
+                            "spread_contribution": contribution if leg == "long" else -contribution,
                         })
     return pd.DataFrame(rows)
 

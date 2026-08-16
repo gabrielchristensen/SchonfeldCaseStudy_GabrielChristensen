@@ -67,6 +67,32 @@ def test_quarter_asset_detail_computes_correct_returns_and_contributions():
     assert short_rows["contribution"].sum() == pytest.approx(-0.15)
     assert not result["dropped"].any()
 
+    # spread_contribution: identical to contribution for the long leg, but
+    # negated for the short leg (spread_ret = long_ret - short_ret, so a
+    # short leg that FELL -- helping the spread -- must show a POSITIVE
+    # spread_contribution, the opposite sign of its own leg contribution).
+    assert long_rows["spread_contribution"].sum() == pytest.approx(0.20)
+    assert short_rows["spread_contribution"].sum() == pytest.approx(0.15)
+    assert result["spread_contribution"].sum() == pytest.approx(0.35)  # matches spread_end=1.35
+
+
+def test_quarter_asset_detail_spread_contribution_flips_sign_when_short_leg_rises():
+    # Short leg RISES this time (hurts the spread) -- spread_contribution
+    # for the short leg must come out negative, unlike test above.
+    prices = _prices([
+        (AS_OF, "TICKA", 100), (NEXT_AS_OF, "TICKA", 110),
+        (AS_OF, "TICKC", 100), (NEXT_AS_OF, "TICKC", 120),
+    ])
+    quarters = [_quarter(["TICKA"], ["TICKC"], spread_end=0.9)]  # 0.10 - 0.20 = -0.10
+    result = quarter_asset_detail(_results(quarters), prices, lag_days_grid=[60], cost_bps=10)
+
+    by_ticker = result.set_index("ticker")
+    assert by_ticker.loc["TICKA", "contribution"] == pytest.approx(0.10)
+    assert by_ticker.loc["TICKA", "spread_contribution"] == pytest.approx(0.10)
+    assert by_ticker.loc["TICKC", "contribution"] == pytest.approx(0.20)
+    assert by_ticker.loc["TICKC", "spread_contribution"] == pytest.approx(-0.20)
+    assert result["spread_contribution"].sum() == pytest.approx(-0.10)
+
 
 def test_quarter_asset_detail_flags_dropped_ticker_and_reweights_remaining():
     # TICKE has no price data at all -- dropped, long leg reweights over
@@ -79,6 +105,7 @@ def test_quarter_asset_detail_flags_dropped_ticker_and_reweights_remaining():
     assert pd.isna(dropped_row["asset_return"])
     assert dropped_row["leg_weight"] == 0.0
     assert dropped_row["contribution"] == 0.0
+    assert dropped_row["spread_contribution"] == 0.0
 
     long_rows = result[(result["leg"] == "long") & (~result["dropped"])]
     assert long_rows["leg_weight"].tolist() == [0.5, 0.5]

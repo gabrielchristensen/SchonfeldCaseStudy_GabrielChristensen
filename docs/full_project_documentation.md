@@ -29,6 +29,7 @@ the primary reference.
    - [HTML Report Redesign](#html-report-redesign-srcreportpy)
    - [Single Pipeline Entry Point](#single-pipeline-entry-point-srcrunpy-src_httppy)
    - [Repository Cleanup](#repository-cleanup)
+   - [Results Post-Mortem: Isolating the Drawdown, and a Real Attribution Bug](#results-post-mortem-isolating-the-drawdown-and-a-real-attribution-bug)
 3. [Defense Quick-Reference Index](#3-defense-quick-reference-index)
 
 ---
@@ -1230,6 +1231,109 @@ and re-ran the full suite there -- 154/154 pass, confirming the pinned
 requirements file is real and self-sufficient, not passing by accident on
 leftover packages. Net result: the codebase was already clean going in;
 this audit is the verification of that, not a large cleanup.
+
+### Results Post-Mortem: Isolating the Drawdown, and a Real Attribution Bug
+
+The user asked for a complete, no-holds-barred analysis of *why* the
+backtest underperforms, using everything already committed in the repo.
+This went well beyond re-reading the memo's existing "mega-cap tilt
+collided with a bull market" explanation -- it re-derived the story
+directly from `data/processed/quarter_asset_detail.csv` and
+`subperiod_stats.csv`, then verified the mechanism against the raw 13F
+panel itself.
+
+**The full-sample max drawdown (-55.4%) is not spread across the ~10.5-year
+window -- it is entirely contained in one sub-period.** Splitting the
+primary lag's closed quarters into calendar years shows 2015-2018 roughly
+flat (Sharpe 0.08), **2019 Q1 through 2022 Q2 losing 30.7% (Sharpe -0.48,
+mean rank-IC -0.036, and this window's own max drawdown IS the full-sample
+-55.4%)**, and 2022 Q3 through 2025 Q4 recovering sharply (+84.2%, Sharpe
+1.14, mean IC +0.049). This was sitting in the already-committed
+`subperiod_stats.csv`'s 3-way split the whole time; the report only ever
+rendered the 2-way split (boundary at 2020-09-30, which cuts through the
+middle of the crash and dilutes the finding into a much less alarming
+-4.8%/+38.6% two-chunk picture).
+
+**Per-ticker attribution, correctly signed, shows the short leg -- not the
+long leg -- is where the damage happened.** Over 2019Q1-2022Q2: long leg
+contribution +30.9%, short leg **-55.7%** (net -24.8%). Narrowed to
+2020Q2-Q3 alone, the short leg cost -70.6% of contribution by itself. The
+worst individual names (TPR, COTY, UAA, UA, FANG, OXY, XOM, VLO, MPC, WFC,
+AIG, DVN -- all shorted, all up 36-97% in Q2-Q3 2020) are exactly the
+apparel/travel/energy names institutions fled hardest in the COVID crash.
+
+**Verified against the raw panel, not inferred from price action alone**:
+pulled real quarter-over-quarter breadth for these exact CUSIPs via
+`pit.as_of_snapshot` (e.g. COTY 348→317→288→251, OXY 1018→795→719→666,
+FANG 572→455→465→420, all Q4'19 through Q3'20) -- breadth was still
+falling or flat in Q3 2020, the same quarter these names' *prices* had
+already rallied 40-97%. The mechanism: 13F-derived breadth is a lagging
+read on institutional sentiment (quarterly filings, 45-90 day disclosure
+lag on top); during a violent V-shaped recovery, price leads observable
+institutional re-entry by more than the formation lag can absorb, so the
+strategy correctly detects genuine institutional abandonment and shorts
+it right as the market begins pricing in the reversal. This also gives a
+mechanistic explanation for the memo's previously-"inconclusive" lag
+sensitivity: within this exact window, 45-day lag lost only 5.7% vs.
+60-day's 30.7% -- less lag, less time for price to run ahead of the
+signal.
+
+**The recovery regime (2022Q3-2025Q4, Sharpe 1.14) is real, current,
+working alpha, not a fluke** -- attribution shows it's almost entirely the
+long leg (+106.4% contribution) correctly riding the 2023-2025 AI/
+semiconductor supercycle (SNDK, MU, NVDA, AVGO, WDC, AMD, INTC, LRCX,
+AMAT all top contributors).
+
+**A real, separate bug found and fixed along the way**: `src/report.py`'s
+Attribution chart (`"Top-10 tickers by \|contribution\| to spread
+return"`) summed `quarter_asset_detail`'s raw `contribution` column
+directly, but that column is each ticker's contribution to *its own leg's*
+return -- always same-signed as its price return, regardless of leg.
+Since `spread_return = long_return - short_return`, a short position that
+*rises* should count as a **negative** contribution to the spread; the old
+code counted it as positive. This wasn't a rare edge case: every one of
+the chart's real top-10 tickers (NVDA, SNDK, MU, AMD, AVGO, INTC, WDC,
+CAT, LLY, META) sat in *both* legs across different quarters in the
+committed data, so the bug touched the whole list -- and it was silently
+hiding real detractors (QCOM, DAL, FCX all real top-10 detractors by
+signed spread impact, none of which appeared in the old unsigned top-10
+at all).
+
+Fixed at the source, not just where it was consumed:
+`detail.quarter_asset_detail()` now emits both `contribution` (unchanged,
+still means "this ticker's impact on its own leg") and a new
+`spread_contribution` column (identical to `contribution` for a long-leg
+row, negated for a short-leg row) -- `src/report.py`'s Attribution chart
+now groups on `spread_contribution`. Re-verified against the real
+committed data: NVDA now shows +0.130 (down from the old, overstated
++0.160), and QCOM/DAL/FCX now correctly appear as the real top detractors
+that were previously hidden.
+
+`src/report.py`'s Regime & attribution section also gained a second,
+3-way sub-period split (`render_subperiods()`, a small local helper the
+existing 2-way call was refactored to share) rendered alongside the
+original 2-way one, specifically because the 2-way split is what masked
+this finding in the first place -- both stay in the report so a reader
+sees the coarser and the sharper cut side by side, with a caveat
+paragraph explaining why they disagree.
+
+**Tests**: `tests/test_detail.py` gained a dedicated
+`spread_contribution` sign-flip test (short leg rises -> negative,
+mirroring the existing "short leg falls -> positive" case already
+implicit in the original fixture) plus a `spread_contribution` assertion
+on the existing dropped-ticker test. `tests/test_report.py` gained a test
+confirming both `regime_equity.jpg` and `regime_equity_3way.jpg` render
+and save, and a monkeypatch-based test that intercepts the real
+`_bar_chart` call for `regime_top_contributors` with an unambiguous
+one-long/one-short fixture (long +10% -> +0.10 bar; short +50% -> **-0.50**
+bar) to lock in the sign fix directly, not just indirectly through HTML
+text matching. 163/163 tests pass, verified in both the local `.venv` and
+a genuinely fresh `requirements.txt`-only venv. The committed
+`results/backtest_report.html` was regenerated via the same clean-clone
+command as every prior regen (no `--panel`) and visually spot-checked:
+the 3-way chart's orange (2019Q1-2022Q2) segment visibly spikes then
+craters from ~1.34 to ~0.60 NAV, and the corrected attribution chart's
+values match the hand-computed numbers above exactly.
 
 ---
 

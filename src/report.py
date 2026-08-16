@@ -19,10 +19,16 @@ sensitivity slices are cut from, then a return-by-decile
 monotonicity check across the full 10-decile cross-section (not just the two
 traded extremes -- the one section that needs the full raw panel, not just
 committed artifacts; see src.detail.decile_returns), then turnover and
-universe-coverage as supporting diagnostics, then regime/attribution
-(per-era performance, benchmark correlation, top-contributor tickers --
-originally exploratory-notebook-only analysis, surfaced here directly so a
-reader of the HTML report doesn't have to go find a separate notebook),
+universe-coverage as supporting diagnostics, then regime/attribution --
+per-era performance at both a 2-way and a 3-way sub-period split (the 2-way
+split's boundary lands mid-crash and can understate how concentrated a bad
+regime really was; the 3-way split is what actually isolates the single
+sub-period containing the full-sample max drawdown), benchmark correlation,
+and top-contributor tickers correctly sign-adjusted for the short leg
+(spread_contribution, not raw contribution -- see src.detail.quarter_asset_detail's
+docstring for why summing the unsigned column gets short-leg names backwards)
+-- originally exploratory-notebook-only analysis, surfaced here directly so a
+reader of the HTML report doesn't have to go find a separate notebook --
 then a disclosures section naming every caveat already surfaced in Phases 1-4,
 backed by real measured numbers where the data is available rather than
 qualitative-only prose.
@@ -605,19 +611,21 @@ def build_report(
             "committed backtest_results.pkl + prices.parquet, no re-run of the backtest.</p>"
         )
 
-        subperiod_df = detail.subperiod_stats(results, PRIMARY_LAG_DAYS, cost_bps=PRIMARY_COST_BPS, n_splits=2)
-        subperiod_navs_list = detail.subperiod_navs(results, PRIMARY_LAG_DAYS, cost_bps=PRIMARY_COST_BPS, n_splits=2)
-        if not subperiod_df.empty:
+        def render_subperiods(n_splits: int, chart_name: str) -> None:
+            subperiod_df = detail.subperiod_stats(results, PRIMARY_LAG_DAYS, cost_bps=PRIMARY_COST_BPS, n_splits=n_splits)
+            subperiod_navs_list = detail.subperiod_navs(results, PRIMARY_LAG_DAYS, cost_bps=PRIMARY_COST_BPS, n_splits=n_splits)
+            if subperiod_df.empty:
+                return
             nav_series = {}
             for _, row in subperiod_df.iterrows():
                 chunk_label = f"{row['start_period'].date()} - {row['end_period'].date()}"
                 if row["chunk"] < len(subperiod_navs_list):
                     nav_series[chunk_label] = subperiod_navs_list[row["chunk"]]
             chart = _line_chart(
-                nav_series, title="Spread NAV by regime (sub-period)", ylabel="NAV (start = 1.0 per chunk)",
-                name="regime_equity", charts_dir=charts_dir,
+                nav_series, title=f"Spread NAV by regime ({n_splits}-way sub-period split)",
+                ylabel="NAV (start = 1.0 per chunk)", name=chart_name, charts_dir=charts_dir,
             )
-            add(f'<div class="chart-card"><img src="{chart}" alt="regime equity curves"></div>')
+            add(f'<div class="chart-card"><img src="{chart}" alt="{n_splits}-way regime equity curves"></div>')
             rows = [
                 {"label": f"{row['start_period'].date()} - {row['end_period'].date()}", **{k: row[k] for k in _STATS_COLS}}
                 for _, row in subperiod_df.iterrows()
@@ -629,6 +637,18 @@ def build_report(
                 for _, row in subperiod_df.iterrows()
             )
             add(f"<p>Rank-IC by regime: {ic_bits}.</p>")
+
+        add("<h3>Sub-period detail (2-way split)</h3>")
+        render_subperiods(2, "regime_equity")
+
+        add("<h3>Sub-period detail (3-way split)</h3>")
+        add(
+            '<p class="meta">The coarser 2-way split above cuts through 2020Q3, blending the pre-COVID years '
+            "with the worst months of the crash into one chunk -- it can understate how concentrated the "
+            "damage really was. The 3-way split below lands its middle boundary differently and isolates a "
+            "single sub-period that contains the entire full-sample max drawdown.</p>"
+        )
+        render_subperiods(3, "regime_equity_3way")
 
         corr = detail.benchmark_correlation(results, PRIMARY_LAG_DAYS, cost_bps=PRIMARY_COST_BPS)
         add("<h3>Benchmark correlation</h3>")
@@ -649,15 +669,28 @@ def build_report(
         except ValueError:
             detail_df = pd.DataFrame()
         if not detail_df.empty:
-            contrib = detail_df.groupby("ticker")["contribution"].sum()
+            # spread_contribution, NOT contribution -- contribution is each
+            # ticker's impact on its OWN leg's return (always same-signed as
+            # its price return, regardless of leg), so summing it directly
+            # gets the short leg backwards: a short position that rose would
+            # show as a positive "contribution" even though a rising short
+            # hurts the spread. spread_contribution is already sign-adjusted
+            # (negated for the short leg) so this sum is the ticker's real,
+            # signed impact on spread_ret = long_ret - short_ret.
+            contrib = detail_df.groupby("ticker")["spread_contribution"].sum()
             top = contrib.reindex(contrib.abs().sort_values(ascending=False).index[:10])
             bar_colors = [COLOR_GOOD if v > 0 else COLOR_BAD for v in top.values]
             chart = _bar_chart(
-                list(top.index), top.tolist(), title="Top-10 tickers by |contribution| to spread return",
-                ylabel="Summed contribution", name="regime_top_contributors", charts_dir=charts_dir,
+                list(top.index), top.tolist(), title="Top-10 tickers by |impact| on spread return",
+                ylabel="Summed spread contribution", name="regime_top_contributors", charts_dir=charts_dir,
                 bar_colors=bar_colors,
             )
             add("<h3>Attribution</h3>")
+            add(
+                '<p class="meta">Sign-adjusted for the short leg: a short position that rises counts as a '
+                "negative contribution to the spread (spread return = long return - short return), not "
+                "positive.</p>"
+            )
             add(f'<div class="chart-card"><img src="{chart}" alt="top contributors"></div>')
 
     # --- Disclosures ------------------------------------------------------
