@@ -85,9 +85,18 @@ for this specific reason: they let the reporting/analysis layer be
 re-run and checked against what's already committed, with **no network
 call and no re-running the actual backtest**:
 ```bash
-python -m src.report --results data/processed/backtest_results.pkl
+python -m src.report --results data/processed/backtest_results.pkl --prices data/processed/prices.parquet
 python -m src.detail --results data/processed/backtest_results.pkl --prices data/processed/prices.parquet
 ```
+`--prices` on `src.report` is optional — when supplied it folds a full
+Regime & attribution section (per-era Sharpe/IC, benchmark correlation and
+beta, top-contributor tickers) straight into the HTML report, reusing
+`src.detail`'s already-tested functions against the same committed
+artifacts; `src.detail`'s own CLI still runs separately to produce the two
+CSVs the regime notebook consumes directly. Every chart in the report is
+also written out as a standalone `.jpg` under `results/charts/`, in
+addition to being embedded inline.
+
 `prices.parquet` specifically is committed because yfinance's adjusted-
 close data gets revised retroactively (splits/dividends) — re-fetching
 live could produce numbers that drift slightly from what the memo
@@ -134,6 +143,8 @@ src/           # reusable pipeline code: ingest, pit, mapping, universe,
                # factor, backtest, report, detail
 tests/         # one test file per src/ module, 129 tests total
 results/       # the committed, self-contained HTML backtest report
+  backtest_report.html   # the report itself (charts embedded inline)
+  charts/                 # the same charts, also as standalone .jpg files
 ```
 
 ## Tests

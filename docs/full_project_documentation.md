@@ -26,6 +26,7 @@ reference on its own.
    - [Phase 4 — Backtest, Report, and Analysis](#phase-4--backtest-report-and-analysis)
    - [Cross-Platform Reproducibility Hardening](#cross-platform-reproducibility-hardening)
    - [Signal and Benchmark Diagnostics](#signal-and-benchmark-diagnostics-srcdetailpy-notebookssignal_and_benchmark_diagnosticsipynb)
+   - [HTML Report Redesign](#html-report-redesign-srcreportpy)
 3. [Defense Quick-Reference Index](#3-defense-quick-reference-index)
 
 ---
@@ -734,6 +735,103 @@ print-only change: re-ran the real full backtest and confirmed every
 closed-quarter number came back bit-for-bit identical to what was
 already committed, only the `generated` timestamp differed.
 
+### HTML Report Redesign (`src/report.py`)
+
+The report was originally a single long page of five blurry base64 PNGs
+and two plain tables, with no navigation and several already-computed
+data fields (the full 12-combination lag×cost grid, `turnover_short`,
+per-quarter `n_names`/`dropped` coverage, and everything in `detail.py`)
+never surfaced. Rebuilt around two changes: real visual design, and
+folding in analysis that already existed but was notebook-only.
+
+**Charts**: PNG → JPEG (`pil_kwargs={"quality": 90}`, dpi 160; `Pillow`
+now an explicit pin in `requirements.txt` — it was already present
+transitively via matplotlib, this just names the version), still a
+base64 `data:` URI (zero external refs, zero `<script>`, same
+self-containment contract `tests/test_report.py` enforces). Each chart
+is also written to `results/charts/<name>.jpg` as a standalone file
+(`build_report`'s new `charts_dir` param) so individual figures can be
+reused outside the HTML — e.g. dropped into the technical-defense deck
+— without re-running anything. Styling uses `seaborn.set_theme()` plus
+the same validated categorical/status/diverging hex palette the
+`dataviz` skill documents (`references/palette.md`): the primary
+equity-curve chart uses an **emphasis** pattern (spread in the accent
+blue, both benchmarks de-emphasized gray) since the honest finding *is*
+"the spread underperforms both benchmarks," and emphasis is the form
+built to make exactly that legible at a glance. Dense per-quarter bar
+charts (turnover, 42 quarters × 2 legs; dropped-ticker coverage) thin
+their x-tick labels to a fixed max (`_set_thinned_xticks`) — the
+pre-fix version rendered all 42 date labels overlapping into an
+unreadable smear, caught by actually reading the rendered JPGs, not by
+assuming the code was fine because it ran without error.
+
+**New content, all derived from data already computed (zero new stats
+logic)**:
+- The full lag×cost grid as an HTML table with an inline diverging
+  background per cell (`_grid_heatmap_table`/`_diverging_bg`) — the 8
+  cross-terms outside the two existing 1-D slices were being computed
+  and discarded.
+- Cost-sensitivity gets a full stats table (was: annualized-return bar
+  chart only, asymmetric with the lag section).
+- Turnover chart adds `turnover_short` (was: long leg only).
+- New **Universe coverage** section: `n_names` and dropped-ticker count
+  per quarter, turning the "missing price data" disclosure bullet from
+  qualitative-only prose into a real measured trend.
+- New **Regime & attribution** section, wired directly to `src.detail`'s
+  already-tested functions (`subperiod_stats`, `subperiod_navs`,
+  `benchmark_correlation`, `quarter_asset_detail`) — the same analysis
+  `notebooks/regime_and_attribution.ipynb` performs, now reachable from
+  the HTML report itself. `build_report` takes an optional `prices`
+  kwarg; when given (and the primary lag's `quarters` carry
+  `long_tickers`/`short_tickers`, true for any real run), this section
+  renders; when omitted, it's skipped entirely via the same
+  `if primary_key in results`-style degrade-gracefully pattern the rest
+  of the file already uses. `main()` gained `--prices` (default
+  `data/processed/prices.parquet`, matching `detail.py`'s own default),
+  loaded if present, warned-and-skipped if not — `python -m src.report`
+  with no flags still works exactly as before.
+- A data-driven **verdict callout** (`_verdict_callout`) computed from
+  the primary result's own `performance_stats` — not hardcoded prose —
+  so it can't drift from the numbers in the table beneath it. A KPI-tile
+  row (`_kpi_tiles`) mirrors §1.3's "Parameters at a glance" table. A
+  sticky top nav (`toc`) links every `<h2>` section by an auto-slugified
+  anchor id.
+
+**Verified for real**, not just by passing tests: regenerated
+`results/backtest_report.html` against the real committed
+`backtest_results.pkl` + `prices.parquet` (no network, no backtest
+re-run). The verdict callout's numbers came back exactly matching the
+memo's own hand-written figures (Sharpe 0.15 vs. SPY's 0.84, max
+drawdown -55.4% vs. -33.7%) — a real cross-check, not a coincidence,
+since both are computed from the same `performance_stats` call on the
+same primary series. The top-contributor bar chart's real output
+(NVDA/SNDK/MU/AMD/AVGO/INTC/WDC dominating) matches the regime notebook's
+already-documented finding almost tile-for-tile, confirming the ticker-
+aggregated `contribution` sum in `_regime_top_contributors` and the
+notebook's per-`(ticker, quarter)` version are consistent views of the
+same underlying attribution. `tests/test_report.py`'s fixture
+(`_fake_results`) was extended with `long_tickers`/`short_tickers`/
+`n_names`/`dropped`/quarter-local `spread_nav` (previously absent —
+`build_report` never read them) plus a new `_fake_prices()` fixture
+(including one deliberately-unpriced ticker, to exercise the drop path)
+so the new Regime & attribution code path is actually exercised by a
+test, not just by the manual real-artifact run. 140/140 tests pass.
+
+**Follow-up fix, same session**: the primary-result chart's two
+benchmarks (internal universe, SPY) were both rendered in the same
+muted gray under the emphasis pattern -- correct for "de-emphasize vs.
+the spread," wrong for "tell the two benchmarks apart from each other."
+Fixed by giving each benchmark its own categorical hue (`COLOR_SLOT2`
+orange for the internal universe, `COLOR_SLOT3` aqua for SPY) while
+keeping the emphasis mechanism's reduced alpha/linewidth on both, so
+they stay visually secondary to the spread without being indistinguishable
+from each other. Also removed the standalone "Rank information
+coefficient" section per-quarter Spearman-IC chart/sentence (redundant
+with the per-regime IC already reported in Regime & attribution, and
+the user judged it not worth a dedicated section) -- `ic_series` remains
+in `results` and still feeds `detail.subperiod_stats`'s regime-level IC,
+only the report's separate top-level section was removed.
+
 ---
 
 ## 3. Defense Quick-Reference Index
@@ -749,3 +847,4 @@ criteria (`docs/prompt.pdf`):
 | **Backtest methodology** — costs, rebalancing, benchmarks, quarterly signal in a daily framework | §1.3 above in full: transaction cost formula, quarterly rebalancing with daily mark-to-market via `leg_nav`, SPY + internal-universe benchmark choice and the cost asymmetry disclosed for it, the daily-rebalanced spread-NAV construction and why it isn't a simple return difference. |
 | **Ability to defend every choice** | This document in full, plus the six phase-specific reports it cross-references, plus `docs/memo.md`'s own Scope Decisions section (what was deliberately excluded, and why, for every axis: holder universe, equity universe, time window, CUSIP genealogy, amendment parsing, value-weighting). |
 | **"Runnable from a clean clone"** (deliverable #1) | [Cross-Platform Reproducibility Hardening](#cross-platform-reproducibility-hardening) above — every gap found via real Windows testing (not assumed), fixed, and re-verified; final confirmation was the user's own Windows machine completing a full `--full` ingest run after the fixes landed. |
+| **"Presents results in self-contained file"** (deliverable #4) | [HTML Report Redesign](#html-report-redesign-srcreportpy) above — `results/backtest_report.html`, zero external refs/JS, verified by `tests/test_report.py`; full lag×cost grid, regime/attribution, and universe-coverage sections folded in on top of the primary result so the single file carries the analysis, not just the headline numbers. |

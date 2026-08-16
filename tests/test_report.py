@@ -18,17 +18,27 @@ def _fake_results():
             "period_of_report": pd.Timestamp("2020-03-31"),
             "as_of_date": pd.Timestamp("2020-05-30"),
             "next_as_of_date": pd.Timestamp("2020-08-28"),
+            "spread_nav": _nav([1.0, 1.01, 1.02, 1.015]),
             "turnover_long": 1.0,
             "turnover_short": 1.0,
             "ic": 0.12,
+            "long_tickers": {"AAA", "BBB"},
+            "short_tickers": {"CCC", "DDD"},
+            "n_names": 40,
+            "dropped": set(),
         },
         {
             "period_of_report": pd.Timestamp("2020-06-30"),
             "as_of_date": pd.Timestamp("2020-08-28"),
             "next_as_of_date": pd.Timestamp("2020-11-27"),
+            "spread_nav": _nav([1.0, 0.995, 1.005, 1.01]),
             "turnover_long": 0.3,
             "turnover_short": 0.4,
             "ic": -0.05,
+            "long_tickers": {"AAA", "BBB"},
+            "short_tickers": {"CCC", "DDD"},
+            "n_names": 42,
+            "dropped": {"CCC"},
         },
     ]
     open_quarters = [{
@@ -51,6 +61,19 @@ def _fake_results():
     return results
 
 
+def _fake_prices():
+    tickers = ["AAA", "BBB", "CCC", "DDD"]
+    dates = pd.date_range("2020-05-29", "2020-11-27", freq="D")
+    rows = []
+    for i, ticker in enumerate(tickers):
+        for j, date in enumerate(dates):
+            # CCC is deliberately never priced -- exercises the "dropped" path.
+            if ticker == "CCC":
+                continue
+            rows.append({"ticker": ticker, "date": date, "adj_close": 100.0 + i + 0.01 * j})
+    return pd.DataFrame(rows)
+
+
 def test_build_report_writes_self_contained_html_with_no_external_refs(tmp_path):
     out_path = tmp_path / "report.html"
 
@@ -63,8 +86,20 @@ def test_build_report_writes_self_contained_html_with_no_external_refs(tmp_path)
     assert "http://" not in html
     assert "https://" not in html
     assert "<script" not in html
-    # Charts are embedded as base64 data URIs, not linked files.
-    assert 'src="data:image/png;base64,' in html
+    # Charts are embedded as base64 JPEG data URIs, not linked files.
+    assert 'src="data:image/jpeg;base64,' in html
+
+
+def test_build_report_saves_jpg_files_to_charts_subfolder(tmp_path):
+    out_path = tmp_path / "report.html"
+
+    build_report(_fake_results(), out_path=out_path)
+
+    charts_dir = tmp_path / "charts"
+    assert charts_dir.is_dir()
+    jpgs = list(charts_dir.glob("*.jpg"))
+    assert len(jpgs) > 0
+    assert any(p.name == "primary_equity_curve.jpg" for p in jpgs)
 
 
 def test_build_report_includes_expected_sections_and_stats(tmp_path):
@@ -76,10 +111,36 @@ def test_build_report_includes_expected_sections_and_stats(tmp_path):
     assert "Primary result" in html
     assert "Formation-lag sensitivity" in html
     assert "Transaction-cost sensitivity" in html
-    assert "Rank information coefficient" in html
+    assert "Full lag x cost grid" in html
+    assert "Rank information coefficient" not in html
     assert "Turnover" in html
+    assert "Universe coverage" in html
     assert "Known limitations" in html
     assert "still open" in html  # open-quarter disclosure
+    assert "Headline:" in html  # verdict callout
+
+
+def test_build_report_adds_regime_section_when_prices_supplied(tmp_path):
+    out_path = tmp_path / "report.html"
+
+    build_report(_fake_results(), out_path=out_path, prices=_fake_prices())
+    html = out_path.read_text()
+
+    assert "Regime &amp; attribution" in html or "Regime & attribution" in html
+    assert "Benchmark correlation" in html
+    assert "Attribution" in html
+    # The deliberately-unpriced ticker's drop should be reflected in the coverage disclosure.
+    assert "ticker-quarter" in html
+
+
+def test_build_report_skips_regime_section_without_prices(tmp_path):
+    out_path = tmp_path / "report.html"
+
+    build_report(_fake_results(), out_path=out_path)
+    html = out_path.read_text()
+
+    assert "Regime & attribution" not in html
+    assert "Benchmark correlation" not in html
 
 
 def test_build_report_handles_empty_results_without_raising(tmp_path):
