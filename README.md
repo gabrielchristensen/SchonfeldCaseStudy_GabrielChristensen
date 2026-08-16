@@ -4,6 +4,11 @@
 research case study — see `docs/prompt.pdf` for the original brief and
 `docs/memo.md` for the 3-5 page deliverable memo.
 
+## Note
+
+The pipelines requires at least 16 GB RAM. The model
+must be futher developed to have a better usage of memory
+
 ## Setup
 
 Requires **Python 3.12.x** (`.python-version` pins 3.12.3 exactly, the
