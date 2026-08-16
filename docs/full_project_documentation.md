@@ -24,6 +24,7 @@ reference on its own.
    - [Phase 2 — CUSIP Mapping & Universe Definition](#phase-2--cusip-mapping--universe-definition)
    - [Phase 3 — Ownership Breadth Momentum Factor](#phase-3--ownership-breadth-momentum-factor)
    - [Phase 4 — Backtest, Report, and Analysis](#phase-4--backtest-report-and-analysis)
+   - [Cross-Platform Reproducibility Hardening](#cross-platform-reproducibility-hardening)
 3. [Defense Quick-Reference Index](#3-defense-quick-reference-index)
 
 ---
@@ -578,6 +579,68 @@ signal caught one secular theme" than "a robust, diversified
 breadth-momentum edge" — a finding for the memo's Next Steps discussion,
 not a rewrite of its honest full-sample headline numbers.
 
+### Cross-Platform Reproducibility Hardening
+
+The case study's first deliverable is "a working pipeline, runnable
+from a clean clone" — no OS specified, and evaluators aren't guaranteed
+to be on macOS/Linux. Real testing on Windows (not assumed, not
+skipped) surfaced a series of concrete gaps, each investigated and
+fixed in turn, then re-verified against real Windows testing:
+
+1. **`setup.sh` didn't run at all on native Windows `cmd`/PowerShell**
+   (it's bash), and the README's "manual" fallback was Unix-only too
+   (`python3`, `source .venv/bin/activate`) — neither documented setup
+   path actually worked on Windows. Fixed: an explicit Windows section
+   in `README.md` (WSL recommended, Git Bash as an alternative), real
+   per-OS manual-setup commands (Windows native venv activation is
+   `.venv\Scripts\activate`, not `source .venv/bin/activate`).
+2. **No OS-agnostic Python version signal.** The `>=3.10` check lived
+   only inside `setup.sh`, which never runs on Windows — a Windows user
+   got zero warning before hitting the exact `TypeError` (from `pit.py`'s
+   PEP 604 syntax) that check exists to prevent. Fixed: a `.python-version`
+   file stating the exact tested version (3.12.3, not just the `>=3.10`
+   floor), and `setup.sh` itself made more robust (prefers `python3`,
+   falls back to `python` — Windows' official installer only registers
+   `python.exe`, not `python3.exe`, so even Git Bash could fail on
+   "command not found" before ever reaching the version check).
+3. **No `.gitattributes`** — line-ending normalization was unmanaged,
+   risking a CRLF-corrupted `setup.sh` depending on a cloning machine's
+   git config. Fixed, with `.parquet`/`.pkl` explicitly marked binary
+   (not left to heuristic auto-detection) and the renormalized binary
+   artifacts verified byte-identical (`md5sum`) before committing.
+4. **README commands broke on literal copy-paste into `cmd.exe`** —
+   bash-style trailing-backslash line continuations and inline `#`
+   comments aren't just unsupported there, they get passed to the
+   Python program as literal unrecognized arguments (`cmd.exe` has no
+   continuation or comment syntax for either character). Fixed: every
+   command in every `bash`-fenced block reduced to one physical line
+   with no inline comments, and the one block that mixed two OS
+   variants via `#`-comment section headers split into two separate
+   blocks.
+5. **`python -m src.ingest --full` stopped mid-run with no error
+   message, and produced no progress output at all from start to
+   finish** — traced to `ingest.py` being the one module in the
+   pipeline that never received the retry/progress hardening
+   `mapping.py` and `backtest.py` each got after hitting real transient
+   network failures during their own phases (see Phase 2 and Phase 4
+   above) — a bare, unretried `requests.get()`, with a single `print()`
+   only at full success. Fixed: `_get_with_retry`, mirroring
+   `mapping.py::_post_with_retry`'s proven schedule (5 attempts,
+   5s/10s/20s/40s backoff, retries `ConnectionError`/`Timeout`/429/5xx,
+   fails fast on a permanent error like 404 rather than burning through
+   retries pointlessly), plus progress printing throughout
+   (start-of-run message, per-dataset `[i/n]` progress, byte counts on
+   completed downloads, silent on cache hits so reruns aren't spammy).
+
+**Verified, not just implemented**: the retry logic was exercised
+against the real, live SEC site (a simulated transient failure
+recovered mid-call against real data, not a mock), and a full
+validation-sample run was confirmed to show continuous progress output
+end to end. Final confirmation came from the user re-running `--full`
+ingest on their actual Windows machine after these fixes landed — it
+completed successfully, closing the loop on an issue this environment
+could only reason about, not reproduce directly.
+
 ---
 
 ## 3. Defense Quick-Reference Index
@@ -592,3 +655,4 @@ criteria (`docs/prompt.pdf`):
 | **Data engineering care** — CUSIP mapping, filer dedup, amendments, confidential treatment | CUSIP mapping: `mapping.py`, 4 real bugs found+fixed (Phase 2 above). Filer dedup: `_winning_accessions`' same-day tie-break by accession number (§1.3); voting-authority-split row dedup in `ingest.py` (Phase 1 above). Amendments: "latest filing wins," a deliberate, disclosed scope cut vs. parsing `AMENDMENTTYPE` (Phase 1 above, §1.3). Confidential treatment: `COVERPAGE`'s `CONFDENIEDEXPIRED` detection (Phase 2 above), disclosed as fundamentally unrecoverable from public data until later disclosure, not a gap engineering can close. |
 | **Backtest methodology** — costs, rebalancing, benchmarks, quarterly signal in a daily framework | §1.3 above in full: transaction cost formula, quarterly rebalancing with daily mark-to-market via `leg_nav`, SPY + internal-universe benchmark choice and the cost asymmetry disclosed for it, the daily-rebalanced spread-NAV construction and why it isn't a simple return difference. |
 | **Ability to defend every choice** | This document in full, plus the six phase-specific reports it cross-references, plus `docs/memo.md`'s own Scope Decisions section (what was deliberately excluded, and why, for every axis: holder universe, equity universe, time window, CUSIP genealogy, amendment parsing, value-weighting). |
+| **"Runnable from a clean clone"** (deliverable #1) | [Cross-Platform Reproducibility Hardening](#cross-platform-reproducibility-hardening) above — every gap found via real Windows testing (not assumed), fixed, and re-verified; final confirmation was the user's own Windows machine completing a full `--full` ingest run after the fixes landed. |
