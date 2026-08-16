@@ -620,9 +620,14 @@ been cherry-picked after seeing results (it was fixed a priori). Cost
 sensitivity is severe: ~77-82%/quarter one-way turnover on each leg
 means the edge nearly vanishes by 25bps (annualized return 3.92% → 0.76%
 across the 0-25bps grid). The most likely explanation, laid out in the
-memo: the mega-cap tilt disclosed in Phase 3 colliding with a decade of
-mega-cap-led market returns, rather than the breadth-momentum concept
-being disproven outright.
+memo at this point in the project: the mega-cap tilt disclosed in Phase 3
+colliding with a decade of mega-cap-led market returns, rather than the
+breadth-momentum concept being disproven outright. (Later sharpened,
+not overturned, by a full results post-mortem -- see [Results
+Post-Mortem](#results-post-mortem-isolating-the-drawdown-and-a-real-attribution-bug)
+below: the drawdown is concentrated entirely in one verified 2019Q1-2022Q2
+regime, driven by the short leg specifically, and `docs/memo.md` now
+leads with that finding.)
 
 **Pre-commit audit**: independently re-derived
 and verified the core computation logic against the real output (decile
@@ -1335,6 +1340,31 @@ the 3-way chart's orange (2019Q1-2022Q2) segment visibly spikes then
 craters from ~1.34 to ~0.60 NAV, and the corrected attribution chart's
 values match the hand-computed numbers above exactly.
 
+**Findings folded into `docs/memo.md` itself, same session.** All of the
+above was, at first, only in this document -- the memo's Results section
+still led with the older, more diffuse "mega-cap tilt collided with a
+bull market" framing. Updated the memo's Executive Summary, Methodology
+(the mega-cap-tilt forward-reference softened to point at the sharper
+mechanism rather than claim it as *the* explanation), and Results
+sections to lead with the regime finding and its verified mechanism, with
+the mega-cap-tilt and decile findings now explicitly framed as
+corroborating rather than primary. Added the `regime_equity_3way.jpg`
+chart as a fourth embedded image. Sharpened Next Steps #2 (from a generic
+scale-neutralization test to a regime-conditional short-side filter,
+directly motivated by the verified mechanism) and #3 (tied the finer lag
+sweep to the real within-regime lag comparison). Trimmed the now-partially-
+redundant decile paragraph to keep the net addition manageable: 2,189 ->
+2,504 words, still within the prompt's 3-5 page range given the primary
+trim mechanism (word count, not image count) established during the
+original gold-standard rewrite. Also fixed two now-stale references found
+while doing this pass: a Phase 4 narrative paragraph above still
+presented the mega-cap-tilt story as the memo's current explanation
+(annotated with a forward pointer to this section, not rewritten, per
+this document's own history-preserving convention), and the Defense
+Quick-Reference Index's "Ability to defend every choice" row still cited
+"the six phase-specific reports" removed in the earlier Repository
+Cleanup.
+
 ---
 
 ## 3. Defense Quick-Reference Index
@@ -1348,6 +1378,6 @@ criteria (`docs/prompt.pdf`):
 | **Point-in-time discipline** — reporting lag, lookahead | §1.3 above (`pit.as_of_snapshot`'s no-backfill rule); the same-`as_of_date` design in `factor.breadth_change` (§1.3, Phase 3 above); the 45/60/90-day lag sweep and its non-monotonic real result (Phase 4 above); dedicated tests in `tests/test_pit.py` including the fast-path/boolean-mask equivalence tests added this session. |
 | **Data engineering care** — CUSIP mapping, filer dedup, amendments, confidential treatment | CUSIP mapping: `mapping.py`, 4 real bugs found+fixed (Phase 2 above). Filer dedup: `_winning_accessions`' same-day tie-break by accession number (§1.3); voting-authority-split row dedup in `ingest.py` (Phase 1 above). Amendments: "latest filing wins," a deliberate, disclosed scope cut vs. parsing `AMENDMENTTYPE` (Phase 1 above, §1.3). Confidential treatment: `COVERPAGE`'s `CONFDENIEDEXPIRED` detection (Phase 2 above), disclosed as fundamentally unrecoverable from public data until later disclosure, not a gap engineering can close. |
 | **Backtest methodology** — costs, rebalancing, benchmarks, quarterly signal in a daily framework | §1.3 above in full: transaction cost formula, quarterly rebalancing with daily mark-to-market via `leg_nav`, SPY + internal-universe benchmark choice and the cost asymmetry disclosed for it, the daily-rebalanced spread-NAV construction and why it isn't a simple return difference. |
-| **Ability to defend every choice** | This document in full, plus the six phase-specific reports it cross-references, plus `docs/memo.md`'s own Scope Decisions section (what was deliberately excluded, and why, for every axis: holder universe, equity universe, time window, CUSIP genealogy, amendment parsing, value-weighting). |
+| **Ability to defend every choice** | This document in full (the single most-detailed build record in the repo, per [Repository Cleanup](#repository-cleanup) above), plus `docs/memo.md`'s own Scope Decisions section (what was deliberately excluded, and why, for every axis: holder universe, equity universe, time window, CUSIP genealogy, amendment parsing, value-weighting). |
 | **"Runnable from a clean clone"** (deliverable #1) | [Cross-Platform Reproducibility Hardening](#cross-platform-reproducibility-hardening) above — every gap found via real Windows testing (not assumed), fixed, and re-verified; final confirmation was the user's own Windows machine completing a full `--full` ingest run after the fixes landed. [Single Pipeline Entry Point](#single-pipeline-entry-point-srcrunpy-src_httppy) above — `python -m src.run` replaces the up-to-5-command manual sequence with one, real path-mismatches between stages fixed by construction, and a real `report.py` NaN-formatting bug was actually caught (not just theorized) by running `--mode smoke` for real. |
 | **"Presents results in self-contained file"** (deliverable #4) | [HTML Report Redesign](#html-report-redesign-srcreportpy) above — `results/backtest_report.html`, zero external refs/JS, verified by `tests/test_report.py`; full lag×cost grid, regime/attribution, and universe-coverage sections folded in on top of the primary result so the single file carries the analysis, not just the headline numbers. |
