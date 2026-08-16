@@ -868,6 +868,26 @@ the user judged it not worth a dedicated section) -- `ic_series` remains
 in `results` and still feeds `detail.subperiod_stats`'s regime-level IC,
 only the report's separate top-level section was removed.
 
+**Reversed, much later session: the user changed their mind and asked
+for it back.** Restored verbatim from git history (`git show 2d68b18 --
+src/report.py`), re-adapted to the report's current APIs (the original
+used raw `sections.append(...)`; current code uses `add_heading`/`add`
+plus `_line_chart`'s now-required `name`/`charts_dir` params and the
+`chart-card` div wrapper, both added after the original section was
+written). Sits between Transaction-cost sensitivity and the Full lag x
+cost grid, its original relative position. `tests/test_report.py`'s
+existing `assert "Rank information coefficient" not in html` flipped to
+`in html`; two more tests added -- `rank_ic.jpg` is now asserted present
+alongside the other standalone chart files, and a new
+`test_rank_ic_section_renders_hand_computed_stats` hand-verifies the
+mean/std/positive-quarter-count text against `_fake_results()`'s two
+`ic` values (0.12, -0.05 -> mean 0.035, sample std 0.120, 50% positive).
+155/155 tests pass. Regenerated the committed, clean-clone-reproducible
+`results/backtest_report.html` (no `--panel`, matching the earlier
+decision to commit that leaner variant) -- real output: mean IC 0.016,
+std 0.158, 66.7% of 42 quarters positive, consistent with the memo's
+already-published 60-day rank-IC figures.
+
 **Drawdown chart added, later session (`docs/memo.md` gold-standard rewrite).**
 While trimming `docs/memo.md` to the prompt's 3-5 page limit, the new memo
 called for a real underwater/drawdown chart alongside the equity curve

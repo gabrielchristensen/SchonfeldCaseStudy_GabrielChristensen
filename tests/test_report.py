@@ -107,6 +107,20 @@ def test_build_report_saves_jpg_files_to_charts_subfolder(tmp_path):
     assert len(jpgs) > 0
     assert any(p.name == "primary_equity_curve.jpg" for p in jpgs)
     assert any(p.name == "primary_drawdown.jpg" for p in jpgs)
+    assert any(p.name == "rank_ic.jpg" for p in jpgs)
+
+
+def test_rank_ic_section_renders_hand_computed_stats(tmp_path):
+    # _fake_results()'s primary-lag quarters carry ic=0.12 and ic=-0.05 --
+    # mean 0.035, sample std (ddof=1) ~0.120, 1 of 2 quarters positive (50%).
+    out_path = tmp_path / "report.html"
+
+    build_report(_fake_results(), out_path=out_path)
+    html = out_path.read_text()
+
+    assert "Mean IC: 0.035" in html
+    assert "std: 0.120" in html
+    assert "positive quarters: 50.0% of 2" in html
 
 
 def test_drawdown_matches_performance_stats_max_drawdown():
@@ -132,7 +146,7 @@ def test_build_report_includes_expected_sections_and_stats(tmp_path):
     assert "Formation-lag sensitivity" in html
     assert "Transaction-cost sensitivity" in html
     assert "Full lag x cost grid" in html
-    assert "Rank information coefficient" not in html
+    assert "Rank information coefficient" in html
     assert "Turnover" in html
     assert "Universe coverage" in html
     assert "Known limitations" in html

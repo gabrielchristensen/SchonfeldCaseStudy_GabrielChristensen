@@ -12,8 +12,10 @@ the technical-defense deck) without re-running anything.
 Layout mirrors the case-study prompt's own evaluation criteria: a headline
 verdict + KPI row, a primary equity curve and drawdown (underwater) profile
 against both benchmarks, then the lag and cost sensitivity grids the prompt
-explicitly asks about (rebalancing timing / transaction costs) plus the full
-lag x cost grid those two slices are cut from, then a return-by-decile
+explicitly asks about (rebalancing timing / transaction costs), a per-quarter
+rank-IC chart (model-free check of factor efficacy, independent of the
+decile-portfolio construction), plus the full lag x cost grid those two
+sensitivity slices are cut from, then a return-by-decile
 monotonicity check across the full 10-decile cross-section (not just the two
 traded extremes -- the one section that needs the full raw panel, not just
 committed artifacts; see src.detail.decile_returns), then turnover and
@@ -500,6 +502,22 @@ def build_report(
         add(f'<div class="chart-card"><img src="{chart}" alt="cost sensitivity"></div>')
         cost_rows = [{"label": f"{c}bps", **s} for c, s in cost_rows_data]
         add(_stats_table(cost_rows, row_label_key="label", row_label_name="Cost"))
+
+    # --- Rank IC -------------------------------------------------------------
+    if primary_key in results:
+        ic_series = results[primary_key]["ic_series"]
+        if not ic_series.empty:
+            add_heading("Rank information coefficient")
+            chart = _line_chart(
+                {"Rank IC (Spearman)": ic_series},
+                title="Per-quarter rank-IC", ylabel="Spearman correlation",
+                name="rank_ic", charts_dir=charts_dir,
+            )
+            add(f'<div class="chart-card"><img src="{chart}" alt="rank IC"></div>')
+            add(
+                f"<p>Mean IC: {ic_series.mean():.3f}, std: {ic_series.std():.3f}, "
+                f"positive quarters: {(ic_series > 0).mean():.1%} of {len(ic_series)}.</p>"
+            )
 
     # --- Full lag x cost grid ------------------------------------------
     if any(k in results for k in ((l, c) for l in LAG_DAYS_GRID for c in COST_BPS_GRID)):

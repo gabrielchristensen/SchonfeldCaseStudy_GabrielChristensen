@@ -76,7 +76,7 @@ manually, one module at a time, for anyone who wants to see each stage in
 isolation rather than trust an orchestrator.
 
 **1. Prove the pipeline is real (~1 minute, live SEC data):**
-`pytest` runs 154 tests, fully offline. `python -m src.ingest` (no
+`pytest` runs 155 tests, fully offline. `python -m src.ingest` (no
 flags) downloads 3 real SEC 13F datasets and parses them — watch real
 filing data flow into a point-in-time panel. Each command below is a
 single line — copy-paste it exactly as shown, on any OS/shell:
@@ -178,7 +178,7 @@ data/
 src/           # reusable pipeline code: ingest, pit, mapping, universe,
                # factor, backtest, report, detail, run (single entry
                # point), _http (shared resilient GET/POST retry helpers)
-tests/         # one test file per src/ module, 154 tests total
+tests/         # one test file per src/ module, 155 tests total
 results/       # the committed, self-contained HTML backtest report
   backtest_report.html   # the report itself (charts embedded inline)
   charts/                 # the same charts, also as standalone .jpg files
