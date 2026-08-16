@@ -1,0 +1,10 @@
+# Normalize line endings on checkout so shell scripts can never get
+# CRLF-corrupted regardless of a cloning machine's git config --
+# setup.sh must stay directly runnable via WSL/Git Bash on Windows.
+* text=auto eol=lf
+*.sh text eol=lf
+
+# Explicit, not left to Git's heuristic auto-detection: these are
+# binary and must never go through line-ending conversion.
+*.parquet binary
+*.pkl binary

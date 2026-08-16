@@ -6,6 +6,14 @@ research case study — see `docs/prompt.pdf` for the original brief and
 
 ## Setup
 
+Built and tested against **Python 3.12.3** specifically (`.python-version`;
+`pyproject.toml` declares `>=3.10` as the floor `setup.sh` enforces, but
+3.12.3 is the exact version this was validated against).
+`requirements.txt` pins every other dependency to an exact version too —
+a fresh clone should reproduce the same environment this was built in,
+not whatever's newest at install time.
+
+**macOS / Linux:**
 ```bash
 git clone <repo-url>
 cd SchonfeldCaseStudy_GabrielChristensen
@@ -13,18 +21,33 @@ cd SchonfeldCaseStudy_GabrielChristensen
 source .venv/bin/activate
 ```
 
-Or manually:
-
+**Windows:** `setup.sh` needs a POSIX shell — it does not run under
+native `cmd`/PowerShell. Use **WSL** (recommended — ships `python3` out
+of the box) or **Git Bash** (works too, but only if your Windows Python
+install put `python3` or `python` on Git Bash's `PATH` — `setup.sh`
+checks for either):
 ```bash
+git clone <repo-url>
+cd SchonfeldCaseStudy_GabrielChristensen
+bash setup.sh
+source .venv/bin/activate
+```
+WSL install: https://learn.microsoft.com/windows/wsl/install — Git Bash
+ships with Git for Windows: https://git-scm.com/download/win
+
+**Manual setup** (any OS, skips `setup.sh`'s Python-version check — confirm
+you're on ≥3.10, ideally 3.12.3, yourself first):
+```bash
+# macOS / Linux / WSL / Git Bash:
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
 
-`requirements.txt` pins every dependency to an exact version, and
-`setup.sh` checks for Python ≥3.10 up front with a clear error message —
-a fresh clone should reproduce the same environment this was built and
-tested in, not whatever's newest at install time.
+# Windows native (cmd or PowerShell):
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
 
 ## How to evaluate this repo, in increasing order of cost
 
