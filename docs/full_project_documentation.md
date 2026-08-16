@@ -952,6 +952,39 @@ placeholder was replaced with the real
 case tests) and two in `tests/test_report.py` (section present/absent).
 154/154 tests pass.
 
+**Reproducibility check, immediately after, and a reversal.** Ran the
+exact README step-3 command (`--results`/`--prices` only, no `--panel`)
+against the committed artifacts and diffed the output byte-for-byte
+against the just-committed `results/backtest_report.html`. Every
+section reproducible from committed artifacts alone -- primary equity
+curve, drawdown, lag/cost sensitivity, turnover, universe coverage,
+regime & attribution, and every other chart's embedded base64 data --
+came back identical. The only difference was the Return by decile
+section itself, absent from the committed-artifacts-only run (expected:
+it needs `--panel`, which needs the gitignored, uncommitted full panel).
+This meant the just-committed `results/backtest_report.html` was
+technically *not* reproducible by a clean-clone evaluator running the
+plain documented command -- it silently required the richer,
+`--panel`-equipped invocation, data only available after running
+`--full` ingest first.
+
+User's call: keep the leaner, clean-clone-reproducible version as the
+committed report, not the panel-enriched one. `results/backtest_report.html`
+was regenerated without `--panel` and re-committed -- the Return by
+decile section (and its TOC entry) no longer appears in the report page.
+`results/charts/decile_returns.jpg` itself stays committed as a
+standalone file, restored via `git checkout` after the no-panel run's
+stale-`.jpg` cleanup would otherwise have deleted it -- `docs/memo.md`
+embeds that file directly, independent of whether the HTML report's own
+section references it, consistent with `report.py`'s own stated design
+intent that standalone chart files are meant to be reusable outside the
+HTML report (e.g., in a defense deck) without re-running anything. Net
+effect: `results/backtest_report.html` is now exactly what
+`python -m src.report --results ... --prices ...` reproduces from a
+clean clone; `docs/memo.md`'s decile chart is unaffected. 154/154 tests
+still pass (no code changed, only which invocation's output was
+committed).
+
 ### Single Pipeline Entry Point (`src/run.py`, `src/_http.py`)
 
 Two separate asks: a progress meter for `universe.py`, and an assessment
