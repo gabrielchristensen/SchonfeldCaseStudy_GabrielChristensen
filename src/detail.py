@@ -38,6 +38,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from src import factor
+from src import mapping as mapping_mod
+from src import universe
 from src.backtest import LAG_DAYS_GRID, PRIMARY_COST_BPS
 from src.backtest import _stitch, apply_transaction_costs, performance_stats
 from src.backtest import leg_nav as _tested_leg_nav
@@ -254,6 +257,122 @@ def subperiod_stats_grid(
     ]
     frames = [f for f in frames if not f.empty]
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def benchmark_correlation(
+    results: dict, lag_days: int, *, cost_bps: float = PRIMARY_COST_BPS, window: int = 63,
+) -> dict:
+    """Correlation and beta of the strategy's daily returns against SPY
+    and the internal equal-weight universe benchmark. `results[(lag_days,
+    cost_bps)]`'s `spread_nav`/`universe_nav`/`spy_nav` are already
+    fully-stitched, continuous daily NAV series (built once by
+    `run_backtest`, not quarter-local) -- this is pure derivation from
+    already-committed `backtest_results.pkl`, no panel dependency, no
+    re-run.
+
+    The three series come from slightly different underlying `leg_nav`
+    calls, so their date indices aren't guaranteed identical -- building
+    them into one DataFrame and dropping any row missing a value keeps
+    only days all three actually have a real observation for, which is
+    the correct set for a correlation/beta calculation (no synthetic or
+    forward-filled days entering the statistic).
+
+    Returns `{"correlation": 3x3 DataFrame, "beta_vs_spy": float,
+    "beta_vs_universe": float, "rolling_corr_vs_spy": Series,
+    "rolling_corr_vs_universe": Series}` (rolling correlation over
+    `window` trading days, default ~1 quarter).
+    """
+    r = results[(lag_days, cost_bps)]
+    navs = pd.DataFrame({
+        "spread": r["spread_nav"],
+        "universe": r["universe_nav"],
+        "spy": r["spy_nav"],
+    }).dropna()
+    rets = navs.pct_change().dropna()
+
+    return {
+        "correlation": rets.corr(),
+        "beta_vs_spy": float(rets["spread"].cov(rets["spy"]) / rets["spy"].var()),
+        "beta_vs_universe": float(rets["spread"].cov(rets["universe"]) / rets["universe"].var()),
+        "rolling_corr_vs_spy": rets["spread"].rolling(window).corr(rets["spy"]),
+        "rolling_corr_vs_universe": rets["spread"].rolling(window).corr(rets["universe"]),
+    }
+
+
+def signal_diagnostics(
+    panel: pd.DataFrame,
+    mapping_df: pd.DataFrame,
+    prices: pd.DataFrame,
+    results: dict,
+    lag_days: int,
+    *,
+    cost_bps: float = PRIMARY_COST_BPS,
+    passive_ciks: set[str] | None = None,
+    history_path: Path = universe.DEFAULT_HISTORY_PATH,
+) -> pd.DataFrame:
+    """Per-closed-quarter `rank_signal` vs. `zscore_signal` diagnostics.
+
+    Re-scores each quarter via `factor.breadth_momentum` -- needs the
+    full panel, NOT purely derivable from committed artifacts like the
+    rest of this module (disclosed, not hidden: same "reproduce from
+    zero" data dependency the README already documents for `--full`).
+
+    This is deliberately NOT a second decile backtest: `pd.qcut` is
+    invariant to any strictly monotonic transform of its sort key, and
+    `rank_signal`/`zscore_signal` are both monotonic transforms of the
+    same `raw_change` -- decile assignment (and therefore every
+    portfolio-level backtest number) is identical either way, verified
+    directly on real data (392 names, 0 differing decile assignments for
+    a real formation date). What actually differs: `rank_signal` is
+    exactly uniform on [0, 1] by construction; `zscore_signal` is
+    un-winsorized and reflects `raw_change`'s real (likely fat-tailed)
+    shape. So the real comparison here is a **Pearson** correlation
+    between `zscore_signal` and realized return (magnitude-sensitive)
+    against the already-stored **Spearman** rank-IC (order-only,
+    invariant to the standardization choice) -- these can genuinely
+    disagree in a way a second backtest run never would.
+
+    One row per quarter: `period_of_report, n_names, spearman_ic,
+    pearson_ic_zscore`, plus mean/std/skew for both signal columns.
+    """
+    quarters = results[(lag_days, cost_bps)]["quarters"]
+    rows = []
+    for q in quarters:
+        period_of_report = q["period_of_report"]
+        as_of_date = q["as_of_date"]
+        next_as_of_date = q["next_as_of_date"]
+        scored = factor.breadth_momentum(
+            panel, period_of_report, as_of_date, mapping_df,
+            passive_ciks=passive_ciks, history_path=history_path,
+        )
+        if scored.empty:
+            continue
+        scored = scored.copy()
+        scored["TICKER"] = mapping_mod.cusip_to_ticker(scored["CUSIP"], mapping_df)
+        scored = scored.dropna(subset=["TICKER"])
+        if scored.empty:
+            continue
+
+        start_px, end_px, _ = _leg_returns(prices, set(scored["TICKER"]), as_of_date, next_as_of_date)
+        realized = end_px / start_px - 1
+        by_ticker = scored.set_index("TICKER")
+        zscore_aligned = by_ticker["zscore_signal"].reindex(realized.index)
+        pearson_ic = float(zscore_aligned.corr(realized, method="pearson")) if len(realized) >= 2 else float("nan")
+
+        rows.append({
+            "period_of_report": period_of_report,
+            "n_names": len(scored),
+            "spearman_ic": q["ic"],
+            "pearson_ic_zscore": pearson_ic,
+            "rank_signal_mean": float(scored["rank_signal"].mean()),
+            "rank_signal_std": float(scored["rank_signal"].std()),
+            "rank_signal_skew": float(scored["rank_signal"].skew()),
+            "zscore_signal_mean": float(scored["zscore_signal"].mean()),
+            "zscore_signal_std": float(scored["zscore_signal"].std()),
+            "zscore_signal_skew": float(scored["zscore_signal"].skew()),
+            "zscore_signal_kurtosis": float(scored["zscore_signal"].kurtosis()),
+        })
+    return pd.DataFrame(rows)
 
 
 def main() -> None:

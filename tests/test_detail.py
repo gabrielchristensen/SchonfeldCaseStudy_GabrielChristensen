@@ -2,7 +2,14 @@ import pandas as pd
 import pytest
 
 import src.detail as detail_mod
-from src.detail import quarter_asset_detail, subperiod_navs, subperiod_stats, subperiod_stats_grid
+from src.detail import (
+    benchmark_correlation,
+    quarter_asset_detail,
+    signal_diagnostics,
+    subperiod_navs,
+    subperiod_stats,
+    subperiod_stats_grid,
+)
 
 AS_OF = pd.Timestamp("2020-06-01")
 NEXT_AS_OF = pd.Timestamp("2020-09-01")
@@ -217,3 +224,163 @@ def test_subperiod_navs_matches_subperiod_stats_chunk_boundaries():
     for nav, (_, row) in zip(navs, stats.iterrows()):
         total_return = float(nav.iloc[-1] / nav.iloc[0] - 1)
         assert total_return == pytest.approx(row["total_return"])
+
+
+# --- benchmark_correlation ------------------------------------------------
+
+def test_benchmark_correlation_matches_hand_computed_beta_and_correlation():
+    dates = pd.date_range("2020-01-01", periods=4, freq="D")
+    # spy daily returns: [0.01, -0.02, 0.03]. spread = 2x spy (perfect
+    # positive correlation, beta=2); universe = -1x spy (perfect negative
+    # correlation, beta=-1 vs spy). Built via explicit cumulative products
+    # so pct_change() reproduces exactly these returns.
+    def _nav_from_returns(rets):
+        nav = [1.0]
+        for r in rets:
+            nav.append(nav[-1] * (1 + r))
+        return pd.Series(nav, index=dates)
+
+    spy_rets = [0.01, -0.02, 0.03]
+    spread_rets = [2 * r for r in spy_rets]
+    universe_rets = [-1 * r for r in spy_rets]
+
+    results = {
+        (60, 10): {
+            "spread_nav": _nav_from_returns(spread_rets),
+            "universe_nav": _nav_from_returns(universe_rets),
+            "spy_nav": _nav_from_returns(spy_rets),
+        }
+    }
+
+    out = benchmark_correlation(results, lag_days=60, cost_bps=10, window=2)
+
+    assert out["correlation"].loc["spread", "spy"] == pytest.approx(1.0)
+    assert out["correlation"].loc["universe", "spy"] == pytest.approx(-1.0)
+    assert out["beta_vs_spy"] == pytest.approx(2.0)
+    assert out["beta_vs_universe"] == pytest.approx(-2.0)
+    # Wherever the short rolling window is defined, the exact linear
+    # relationship still holds perfectly.
+    non_nan = out["rolling_corr_vs_spy"].dropna()
+    assert len(non_nan) > 0
+    assert (non_nan.round(6) == 1.0).all()
+
+
+def test_benchmark_correlation_drops_dates_not_shared_across_all_three_series():
+    dates = pd.date_range("2020-01-01", periods=3, freq="D")
+    extra_date = pd.Timestamp("2020-01-04")
+    results = {
+        (60, 10): {
+            "spread_nav": pd.Series([1.0, 1.01, 1.02], index=dates),
+            "universe_nav": pd.Series([1.0, 1.005, 0.999], index=dates),
+            # spy has one extra date the others don't -- must be excluded,
+            # not ffilled or treated as a real observation.
+            "spy_nav": pd.Series([1.0, 1.005, 1.01, 1.02], index=list(dates) + [extra_date]),
+        }
+    }
+    out = benchmark_correlation(results, lag_days=60, cost_bps=10)
+    # Only 2 shared return observations (from 3 shared NAV points) --
+    # correlation is still computable and doesn't error on the mismatch.
+    assert out["correlation"].shape == (3, 3)
+
+
+# --- signal_diagnostics ----------------------------------------------------
+
+_SD_PERIOD = "2020-03-31"
+_SD_PRIOR_PERIOD = "2019-12-31"
+_SD_PANEL_COLUMNS = [
+    "ACCESSION_NUMBER", "FILING_DATE", "SUBMISSIONTYPE", "CIK",
+    "PERIODOFREPORT", "CUSIP", "VALUE", "SSHPRNAMT",
+]
+
+
+def _sd_panel(rows):
+    df = pd.DataFrame(rows, columns=_SD_PANEL_COLUMNS)
+    df["FILING_DATE"] = pd.to_datetime(df["FILING_DATE"])
+    df["PERIODOFREPORT"] = pd.to_datetime(df["PERIODOFREPORT"])
+    return df
+
+
+def test_signal_diagnostics_pearson_ic_matches_hand_computed_value(tmp_path):
+    history_path = tmp_path / "sp500_history.csv"
+    pd.DataFrame(
+        [("2019-01-01", "TICKA,TICKB,TICKC")], columns=["date", "tickers"]
+    ).to_csv(history_path, index=False)
+
+    mapping_df = pd.DataFrame({
+        "CUSIP": ["CUSIP001", "CUSIP002", "CUSIP003"],
+        "TICKER": ["TICKA", "TICKB", "TICKC"],
+        "NAME": ["A", "B", "C"],
+    })
+
+    # CUSIP001: current breadth 3, prior 1 -> raw_change=+2
+    # CUSIP002: current breadth 2, prior 1 -> raw_change=+1
+    # CUSIP003: current breadth 1, prior 1 -> raw_change=0
+    # raw_change=[2,1,0] -> zscore=[1,0,-1] (mean=1, sample std=1)
+    rows = [
+        ("A1", "2020-05-10", "13F-HR", "CIK_A1", _SD_PERIOD, "CUSIP001", 100, 10),
+        ("A2", "2020-05-10", "13F-HR", "CIK_A2", _SD_PERIOD, "CUSIP001", 100, 10),
+        ("A3", "2020-05-10", "13F-HR", "CIK_A3", _SD_PERIOD, "CUSIP001", 100, 10),
+        ("P1", "2020-02-01", "13F-HR", "CIK_A1", _SD_PRIOR_PERIOD, "CUSIP001", 100, 10),
+        ("B1", "2020-05-10", "13F-HR", "CIK_B1", _SD_PERIOD, "CUSIP002", 100, 10),
+        ("B2", "2020-05-10", "13F-HR", "CIK_B2", _SD_PERIOD, "CUSIP002", 100, 10),
+        ("P2", "2020-02-01", "13F-HR", "CIK_B1", _SD_PRIOR_PERIOD, "CUSIP002", 100, 10),
+        ("C1", "2020-05-10", "13F-HR", "CIK_C1", _SD_PERIOD, "CUSIP003", 100, 10),
+        ("P3", "2020-02-01", "13F-HR", "CIK_C1", _SD_PRIOR_PERIOD, "CUSIP003", 100, 10),
+    ]
+    panel = _sd_panel(rows)
+
+    as_of_date = pd.Timestamp("2020-06-01")
+    next_as_of_date = pd.Timestamp("2020-09-01")
+    # realized returns = 0.02 * zscore exactly -> Pearson correlation = 1.0
+    prices = pd.DataFrame({
+        "date": [as_of_date, next_as_of_date] * 3,
+        "ticker": ["TICKA", "TICKA", "TICKB", "TICKB", "TICKC", "TICKC"],
+        "adj_close": [100, 102, 100, 100, 100, 98],
+    })
+
+    results = {
+        (60, 10): {
+            "quarters": [{
+                "period_of_report": pd.Timestamp(_SD_PERIOD),
+                "as_of_date": as_of_date,
+                "next_as_of_date": next_as_of_date,
+                "ic": 0.42,
+            }]
+        }
+    }
+
+    out = signal_diagnostics(
+        panel, mapping_df, prices, results, lag_days=60, cost_bps=10, history_path=history_path,
+    )
+
+    assert len(out) == 1
+    row = out.iloc[0]
+    assert row["n_names"] == 3
+    assert row["spearman_ic"] == pytest.approx(0.42)
+    assert row["pearson_ic_zscore"] == pytest.approx(1.0)
+    assert row["zscore_signal_mean"] == pytest.approx(0.0, abs=1e-9)
+    assert row["zscore_signal_std"] == pytest.approx(1.0)
+
+
+def test_signal_diagnostics_skips_quarters_with_no_scored_names(tmp_path):
+    history_path = tmp_path / "sp500_history.csv"
+    pd.DataFrame([("2019-01-01", "TICKA")], columns=["date", "tickers"]).to_csv(history_path, index=False)
+    mapping_df = pd.DataFrame({"CUSIP": ["CUSIP001"], "TICKER": ["TICKA"], "NAME": ["A"]})
+    panel = _sd_panel([])  # empty panel -> nothing scores for any quarter
+
+    results = {
+        (60, 10): {
+            "quarters": [{
+                "period_of_report": pd.Timestamp(_SD_PERIOD),
+                "as_of_date": pd.Timestamp("2020-06-01"),
+                "next_as_of_date": pd.Timestamp("2020-09-01"),
+                "ic": float("nan"),
+            }]
+        }
+    }
+    prices = pd.DataFrame(columns=["date", "ticker", "adj_close"])
+
+    out = signal_diagnostics(
+        panel, mapping_df, prices, results, lag_days=60, cost_bps=10, history_path=history_path,
+    )
+    assert out.empty

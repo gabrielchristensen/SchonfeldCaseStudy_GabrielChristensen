@@ -469,11 +469,14 @@ def run_backtest(
     # end_period when that boundary is still in the future.
     extended_end = (pd.Period(pd.Timestamp(end_period), freq="Q") + 1).end_time.normalize()
 
-    for lag_days in lag_days_grid:
+    n_lags = len(lag_days_grid)
+    for lag_idx, lag_days in enumerate(lag_days_grid, start=1):
         schedule = formation_dates(start_period, extended_end, lag_days)
+        n_quarters = len(schedule) - 1
+        print(f"[{lag_idx}/{n_lags}] lag={lag_days}d: scoring {n_quarters} quarters...")
         quarters = []
         prev_long, prev_short = set(), set()
-        for idx in range(len(schedule) - 1):
+        for idx in range(n_quarters):
             period, as_of = schedule[idx]
             _, next_as_of = schedule[idx + 1]
             q = quarter_pnl(
@@ -482,6 +485,8 @@ def run_backtest(
                 passive_ciks=passive_ciks, history_path=history_path,
                 ticker_to_cusip=ticker_to_cusip,
             )
+            print(f"  [{idx + 1}/{n_quarters}] {pd.Timestamp(period).date()}"
+                  + ("" if q is not None else " (skipped -- nothing tradable)"))
             if q is None:
                 continue
             q["is_open"] = next_as_of > as_of_today
@@ -490,6 +495,8 @@ def run_backtest(
 
         closed = [q for q in quarters if not q["is_open"]]
         open_quarters = [q for q in quarters if q["is_open"]]
+        print(f"[{lag_idx}/{n_lags}] lag={lag_days}d: done "
+              f"({len(closed)} closed quarters, {len(open_quarters)} open)")
 
         spy_nav, _ = leg_nav(
             prices, {BENCHMARK_TICKER},
