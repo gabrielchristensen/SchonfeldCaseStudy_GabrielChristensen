@@ -56,20 +56,28 @@ def post_with_retry(
     url: str, *, headers: dict, json, timeout: int = 30, max_attempts: int = 5
 ) -> requests.Response:
     """POST with the same retry policy as get_with_retry (connection
-    errors/timeouts, 429/5xx, fixed 5s/10s/20s/40s backoff)."""
+    errors/timeouts, 429/5xx, fixed 5s/10s/20s/40s backoff). Prints on
+    every retry, same as get_with_retry -- previously silent here, which
+    meant a caller in a long unattended run (e.g. mapping.py's OpenFIGI
+    batches) saw no sign that a retry was even happening, indistinguishable
+    from the process being dead."""
     delay = 5
     for attempt in range(max_attempts):
         try:
             resp = requests.post(url, headers=headers, json=json, timeout=timeout)
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
             if attempt == max_attempts - 1:
                 raise
+            print(f"  {exc.__class__.__name__} posting to {url}, retrying in {delay}s "
+                  f"(attempt {attempt + 1}/{max_attempts})...")
             time.sleep(delay)
             delay *= 2
             continue
         if resp.status_code == 429 or resp.status_code >= 500:
             if attempt == max_attempts - 1:
                 resp.raise_for_status()
+            print(f"  HTTP {resp.status_code} posting to {url}, retrying in {delay}s "
+                  f"(attempt {attempt + 1}/{max_attempts})...")
             time.sleep(delay)
             delay *= 2
             continue

@@ -126,6 +126,13 @@ def fetch_openfigi_mappings(
     transient "No route to host" network failure partway through with no
     resilience, losing all progress; this makes a re-run resume instead of
     restarting from zero. Mirrors ingest.py's checkpoint_dir for --full mode.
+
+    Prints an upfront batch-count/ETA estimate and a `[i/n]` line per batch
+    (same pattern as ingest.py's/backtest.py's progress printing) -- a real
+    unauthenticated run against ~30k candidates is ~3,000 sequential
+    batches, ~2+ hours of inter-batch sleep alone, and this loop previously
+    had zero print() calls in it, making that long-but-working run
+    indistinguishable from a hang.
     """
     # Explicit dtypes (not a bare pd.DataFrame(columns=...)) matter here: an
     # empty frame's columns default to dtype object, and concatenating that
@@ -146,8 +153,26 @@ def fetch_openfigi_mappings(
 
     headers = _headers(api_key)
     batch_size = _BATCH_SIZE_AUTHENTICATED if api_key else _BATCH_SIZE_UNAUTHENTICATED
+    sleep_s = 2.5 if not api_key else 0.3
+    n_batches = -(-len(remaining) // batch_size)  # ceil division
+    if remaining:
+        mode = (
+            f"authenticated ({_BATCH_SIZE_AUTHENTICATED} CUSIPs/batch)" if api_key
+            else f"unauthenticated ({_BATCH_SIZE_UNAUTHENTICATED} CUSIPs/batch -- "
+                 "set OPENFIGI_API_KEY for a much shorter run)"
+        )
+        resume_note = (
+            f"safe to interrupt -- {checkpoint_path} will resume progress on a re-run"
+            if checkpoint_path is not None else
+            "no checkpoint_path set -- interrupting this run loses all progress"
+        )
+        print(f"Querying {len(remaining):,} CUSIPs in {n_batches:,} batches, {mode}. "
+              f"~{(n_batches - 1) * sleep_s / 60:.0f} min of inter-batch waiting alone, "
+              f"plus real request time. {resume_note}.")
+
     new_rows = [] #Results from the current run
-    for i in range(0, len(remaining), batch_size):
+    n_resolved = 0
+    for batch_idx, i in enumerate(range(0, len(remaining), batch_size), start=1):
         batch = remaining[i : i + batch_size] #Slicing doesnt throw "Out of Index Error"
         jobs = [{"idType": "ID_CUSIP", "idValue": c} for c in batch] #Indicates CUSIP type
         resp = post_with_retry(OPENFIGI_URL, headers=headers, json=jobs)
@@ -166,13 +191,15 @@ def fetch_openfigi_mappings(
                 "RESOLVED": True,
             })
         new_rows.extend(batch_rows) #concat results of the batch with previous one
+        n_resolved += sum(1 for r in batch_rows if r["RESOLVED"])
+        print(f"[{batch_idx}/{n_batches}] {len(batch)} CUSIPs queried ({n_resolved:,} resolved so far)")
         if checkpoint_path is not None: #Saves every batch if checkpoint
             checkpoint_path.parent.mkdir(parents=True, exist_ok=True) #ensures that the parent folder exists, else create
             pd.DataFrame(batch_rows, columns=_RESULT_COLUMNS).to_csv(
                 checkpoint_path, mode="a", header=not checkpoint_path.exists(), index=False
             ) #mode=a means append instead of overwwriting it, the header keyword makes sure the header isnt duplicated in df
         if i + batch_size < len(remaining): #rate limit
-            time.sleep(2.5 if not api_key else 0.3)
+            time.sleep(sleep_s)
     new_df = pd.DataFrame(new_rows, columns=_RESULT_COLUMNS)
     combined = pd.concat([already, new_df], ignore_index=True)[_RESULT_COLUMNS]
     # Defensive, not redundant: even with explicit dtypes above, concat can 

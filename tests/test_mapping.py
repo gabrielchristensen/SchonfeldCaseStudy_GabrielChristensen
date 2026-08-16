@@ -178,6 +178,57 @@ def test_fetch_openfigi_mappings_batches_at_100_when_authenticated(monkeypatch):
     assert len(result) == 250
 
 
+def test_fetch_openfigi_mappings_prints_progress_per_batch(monkeypatch, capsys):
+    # Regression guard for a real "stuck forever" report: a 30k-candidate
+    # unauthenticated run is ~3,000 batches with zero print() calls in the
+    # loop, indistinguishable from a hang. Every batch must print a
+    # [i/n] progress line with a running resolved count.
+    def fake_post(url, headers, json, timeout):
+        return _FakeResponse([{"data": [{"ticker": "X", "exchCode": "US", "name": "X CORP"}]}] * len(json))
+
+    monkeypatch.setattr("src._http.requests.post", fake_post)
+    monkeypatch.setattr("src.mapping.time.sleep", lambda s: None)
+
+    cusips = [f"CUSIP{i:04d}" for i in range(25)]  # 3 batches at size 10
+    fetch_openfigi_mappings(cusips)
+
+    out = capsys.readouterr().out
+    assert "[1/3]" in out
+    assert "[2/3]" in out
+    assert "[3/3]" in out
+    assert "25 resolved so far" in out  # last batch's running total
+
+
+def test_fetch_openfigi_mappings_prints_upfront_eta_estimate(monkeypatch, capsys):
+    def fake_post(url, headers, json, timeout):
+        return _FakeResponse([{"data": [{"ticker": "X", "exchCode": "US", "name": "X CORP"}]}] * len(json))
+
+    monkeypatch.setattr("src._http.requests.post", fake_post)
+    monkeypatch.setattr("src.mapping.time.sleep", lambda s: None)
+
+    fetch_openfigi_mappings([f"CUSIP{i:04d}" for i in range(25)])
+
+    out = capsys.readouterr().out
+    assert "25 CUSIPs in 3 batches" in out
+    assert "unauthenticated" in out
+    assert "OPENFIGI_API_KEY" in out
+
+
+def test_fetch_openfigi_mappings_skips_zero_batch_estimate_when_nothing_remains(monkeypatch, capsys):
+    # Everything already in the checkpoint -> remaining is empty -> no
+    # nonsensical "0 CUSIPs in 0 batches" line.
+    def fake_post(url, headers, json, timeout):
+        raise AssertionError("should not be called -- nothing remains to fetch")
+
+    monkeypatch.setattr("src._http.requests.post", fake_post)
+
+    result = fetch_openfigi_mappings([], api_key="secret-key")
+
+    out = capsys.readouterr().out
+    assert "batches" not in out
+    assert result.empty
+
+
 def test_fetch_openfigi_mappings_sends_api_key_header(monkeypatch):
     captured = {}
 
@@ -228,6 +279,48 @@ def test_fetch_openfigi_mappings_retries_on_connection_error(monkeypatch):
 
     assert len(calls) == 2
     assert result.loc[0, "RESOLVED"] == True
+
+
+def test_fetch_openfigi_mappings_prints_on_429_retry(monkeypatch, capsys):
+    # post_with_retry previously printed nothing on retry (unlike its
+    # sibling get_with_retry), so a real 429 during a long unattended run
+    # looked identical to a dead process -- regression guard.
+    calls = []
+
+    def fake_post(url, headers, json, timeout):
+        calls.append(1)
+        if len(calls) == 1:
+            return _FakeResponse({}, status_code=429)
+        return _FakeResponse([{"data": [{"ticker": "X", "exchCode": "US", "name": "X CORP"}]}])
+
+    monkeypatch.setattr("src._http.requests.post", fake_post)
+    monkeypatch.setattr("src.mapping.time.sleep", lambda s: None)
+
+    fetch_openfigi_mappings(["037833100"])
+
+    out = capsys.readouterr().out
+    assert "HTTP 429" in out
+    assert "retrying in" in out
+    assert "attempt 1/5" in out
+
+
+def test_fetch_openfigi_mappings_prints_on_connection_error_retry(monkeypatch, capsys):
+    calls = []
+
+    def fake_post(url, headers, json, timeout):
+        calls.append(1)
+        if len(calls) == 1:
+            raise requests.exceptions.ConnectionError("No route to host")
+        return _FakeResponse([{"data": [{"ticker": "X", "exchCode": "US", "name": "X CORP"}]}])
+
+    monkeypatch.setattr("src._http.requests.post", fake_post)
+    monkeypatch.setattr("src.mapping.time.sleep", lambda s: None)
+
+    fetch_openfigi_mappings(["037833100"])
+
+    out = capsys.readouterr().out
+    assert "ConnectionError" in out
+    assert "retrying in" in out
 
 
 def test_fetch_openfigi_mappings_raises_after_exhausting_retries(monkeypatch):

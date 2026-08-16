@@ -482,6 +482,45 @@ AAPL's breadth with/without exclusion at an early- and a recent-window
 date, and regression-tested directly against the real committed
 reference file so it can't silently regress.
 
+**Much later session: "the code is getting stuck" bug report, root-caused
+via reading, not reproducing a multi-hour run.** `python -m src.mapping
+--build` prints one candidate-count summary line (e.g. "30,000 candidate
+CUSIPs ... out of 115,xxx distinct CUSIPs in the panel") and then, on a
+real unauthenticated run, goes completely silent for as long as the run
+takes — `fetch_openfigi_mappings`' batch loop had **zero `print()` calls**
+in it. At `_BATCH_SIZE_UNAUTHENTICATED = 10` and the existing 2.5s
+inter-batch sleep, 30,000 candidates is 3,000 sequential batches,
+`~2,999 * 2.5s ≈ 125 minutes` of `time.sleep` alone before counting real
+request latency or any retries -- a long-but-working run, indistinguishable
+from a hang. This is the third occurrence of the exact same bug shape
+already fixed twice elsewhere in this project (`ingest.py`'s `--full`
+mode, `backtest.py`'s `run_backtest()`, both documented above/below) --
+`mapping.py` was simply the one module that never got the same treatment.
+Confirmed (not assumed) this machine has no `OPENFIGI_API_KEY` set
+(checked the shell environment and for a `.env` file), so the
+unauthenticated math is the mode that actually applies here. A second,
+compounding gap: `src/_http.py`'s `post_with_retry` (used by
+`fetch_openfigi_mappings`) printed nothing on retry at all, unlike its
+sibling `get_with_retry` which already did -- so even the resilience path
+was silent.
+
+Neither function has an actual infinite loop (`post_with_retry` is bounded
+at 5 attempts/30s timeout each; the batch loop is a plain bounded
+`range()`), so the fix is purely additive printing, not a behavior change:
+an upfront line before the loop starts (batch count, authenticated vs.
+not, a rough ETA, and whether the run is safely resumable via
+`checkpoint_path`), a `[i/n]`-style line per batch with a running resolved
+count (mirroring `ingest.py`/`backtest.py`'s existing progress-printing
+convention exactly), and retry-attempt printing added to `post_with_retry`
+to match `get_with_retry`. Verified with a synthetic run (monkeypatched
+`post_with_retry` returning instantly, no real network wait) that the
+printed cadence and ETA math are correct, including at the real ~30k-batch
+scale (`3,000` batches → `~125 min`, matching the estimate above exactly).
+5 new tests in `tests/test_mapping.py` (progress-line presence, the
+upfront-estimate line, a zero-remaining edge case that must NOT print a
+nonsensical "0 batches" line, and retry printing on both 429 and
+connection-error paths). 160/160 tests pass.
+
 ### Phase 3 — Ownership Breadth Momentum Factor
 
 **Built**: `src/factor.py`.
