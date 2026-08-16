@@ -25,6 +25,14 @@ data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 
+# Exceptions: small, final backtest artifacts committed deliberately so
+# evaluators can verify/re-render the deliverable without redoing the
+# full expensive pipeline (see README.md's tiered evaluator flow).
+!data/processed/backtest_results.pkl
+!data/processed/prices.parquet
+!data/processed/quarter_asset_detail.csv
+!data/processed/subperiod_stats.csv
+
 # OS / editor
 .DS_Store
 .idea/
