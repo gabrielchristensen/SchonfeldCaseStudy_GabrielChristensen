@@ -6,7 +6,7 @@ research case study — see `docs/prompt.pdf` for the original brief and
 
 ## Note
 
-The pipelines requires at least 16 GB RAM. The model
+The pipeline requires at least 16 GB RAM. The model
 must be futher developed to have a better usage of memory
 
 ## Setup
