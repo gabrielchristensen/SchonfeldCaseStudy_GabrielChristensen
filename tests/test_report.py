@@ -1,8 +1,6 @@
-import re
-
 import pandas as pd
 
-from src.backtest import COST_BPS_GRID, LAG_DAYS_GRID, PRIMARY_COST_BPS, PRIMARY_LAG_DAYS, performance_stats
+from src.backtest import COST_BPS_GRID, LAG_DAYS_GRID, performance_stats
 from src.report import _drawdown, _stats_table, build_report
 
 

@@ -1136,6 +1136,42 @@ is a local development tool, not part of the submitted deliverable, and
 shouldn't ship in the repo an evaluator clones. 154/154 tests pass
 (untouched by this session — no `src/` logic changed).
 
+**Dead-code / unused-import / unused-dependency audit, later session.**
+Real static analysis, not a manual skim: installed `ruff` into `.venv`
+temporarily (not added to `requirements.txt` — a one-off dev tool, not a
+runtime dependency; uninstalled again afterward) and ran
+`ruff check --select=F` (pyflakes: unused imports/variables, undefined
+names) against all 3,426 lines of `src/` and every file in `tests/`.
+Found and fixed 5 real issues, all leftovers from this session's own
+earlier edits: an f-string with no placeholders in `report.py`, an
+unused `io.BytesIO` import in `test_ingest.py`, and an unused `import re`
+plus two unused constants (`PRIMARY_COST_BPS`, `PRIMARY_LAG_DAYS`) in
+`test_report.py`. `ruff check --select=F` came back clean after.
+
+Cross-checked all 10 pinned packages in `requirements.txt` against real
+`import` usage in `src/`/`tests/`: `scipy`, `pyarrow`, and `pillow` all
+show zero *direct* imports, which looked suspicious until verified as
+genuine transitive necessities, not dead pins -- `scipy` backs pandas'
+`.corr(method="spearman")` (used in `backtest._rank_ic`), `pyarrow` backs
+every `pd.read_parquet`/`to_parquet` call (10 call sites), and `pillow`
+backs matplotlib's JPEG chart export (`report.py`'s `pil_kwargs`). All
+three correctly stay pinned. The reverse check (every third-party module
+actually imported across `src/`/`tests/`) found nothing missing a pin.
+
+Checked every one of the 85 module-level functions/classes in `src/` for
+at least one call site elsewhere in `src/`/`tests/` (a function used only
+by its own tests still counts as used) -- zero dead functions found.
+Separately checked every `argparse` flag across all `src/*.py` CLI entry
+points actually gets read via `args.<dest>` in the same file -- zero
+unused flags found. Finally, since `requirements.txt` had `jupyter`
+removed in the prior cleanup session but the long-lived `.venv` still had
+its transitive packages installed from before, built a genuinely fresh
+venv from `requirements.txt` alone (not just re-running the existing one)
+and re-ran the full suite there -- 154/154 pass, confirming the pinned
+requirements file is real and self-sufficient, not passing by accident on
+leftover packages. Net result: the codebase was already clean going in;
+this audit is the verification of that, not a large cleanup.
+
 ---
 
 ## 3. Defense Quick-Reference Index

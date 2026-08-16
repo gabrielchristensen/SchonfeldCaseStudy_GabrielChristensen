@@ -403,7 +403,7 @@ def build_report(
     def add(html: str) -> None:
         sections.append((None, html))
 
-    add(f"<h1>13F Ownership-Breadth-Momentum Backtest</h1>")
+    add("<h1>13F Ownership-Breadth-Momentum Backtest</h1>")
     add(_kpi_tiles(meta))
 
     # --- Primary result -----------------------------------------------
