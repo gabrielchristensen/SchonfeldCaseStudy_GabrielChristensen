@@ -43,6 +43,8 @@ from pathlib import Path
 from urllib.parse import urljoin
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from src._http import get_with_retry
 
@@ -256,38 +258,76 @@ def build_raw_panel(
     re-parsed -- so a crash partway through `--full` mode (~55 datasets)
     doesn't force re-parsing everything already done.
 
+    When `checkpoint_dir` is given, datasets are also streamed one at a
+    time into a single combined parquet file (`_combined_raw.parquet`)
+    rather than accumulated as a growing list of DataFrames: at --full
+    scale (~55 datasets spanning 2013-present), holding every dataset's
+    parsed frame alive simultaneously just to feed one final `pd.concat`
+    -- which itself allocates a second full-size buffer on top of that --
+    is what pushed real runs past available RAM right at the end, after
+    all the (individually fine) per-dataset parsing had already
+    completed. Without `checkpoint_dir` (the small 3-dataset validation
+    sample), the old accumulate-then-concat path is kept since it's tiny.
+
     SEC's dataset windows are documented as covering disjoint filing
     periods, but the naming scheme changed in 2024 (calendar-quarter
     buckets -> rolling 3-month windows); the final dedup on
     (ACCESSION_NUMBER, CUSIP) guards against double-counting a filing that
     ends up represented in two datasets at that boundary.
     """
-    frames = []
     n = len(filenames)
+    frames = []
+    combined_path = None
+    writer = None
+    if checkpoint_dir is not None:
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        combined_path = checkpoint_dir / "_combined_raw.parquet"
+        # Always rebuilt from the (already-cached) per-dataset checkpoints --
+        # cheap re-streaming, not re-parsing -- so a crash mid-stream on a
+        # prior run can never leave a corrupt combined file mistaken for a
+        # complete one.
+        combined_path.unlink(missing_ok=True)
+
     for i, filename in enumerate(filenames, start=1):
         short_name = filename.rsplit("/", 1)[-1]
         checkpoint_path = checkpoint_dir / f"{Path(short_name).stem}.parquet" if checkpoint_dir else None
         if checkpoint_path is not None and checkpoint_path.exists():
             print(f"[{i}/{n}] {short_name}: using cached checkpoint")
-            frames.append(pd.read_parquet(checkpoint_path))
-            continue
-        print(f"[{i}/{n}] {short_name}")
-        zip_path = download_dataset(filename, dest_dir)
-        print(f"  parsing {short_name}...")
-        tables = parse_dataset(zip_path)
-        submission = _clean_submission(tables["submission"])
-        infotable = _clean_infotable(tables["infotable"])
-        coverpage = _clean_coverpage(tables["coverpage"])
-        merged = submission.merge(infotable, on="ACCESSION_NUMBER", how="inner") #13F-NTs dont have INFOTABLE
-        # Left join: a COVERPAGE parsing gap must never silently drop
-        # otherwise-valid INFOTABLE holdings rows. A missing COVERPAGE row
-        # surfaces as NaN manager/confidentiality columns, not a lost row.
-        merged = merged.merge(coverpage, on="ACCESSION_NUMBER", how="left")
-        if checkpoint_path is not None:
-            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-            merged.to_parquet(checkpoint_path)
-        frames.append(merged)
-    panel = pd.concat(frames, ignore_index=True) #concat to one file
+            merged = pd.read_parquet(checkpoint_path)
+        else:
+            print(f"[{i}/{n}] {short_name}")
+            zip_path = download_dataset(filename, dest_dir)
+            print(f"  parsing {short_name}...")
+            tables = parse_dataset(zip_path)
+            submission = _clean_submission(tables["submission"])
+            infotable = _clean_infotable(tables["infotable"])
+            coverpage = _clean_coverpage(tables["coverpage"])
+            merged = submission.merge(infotable, on="ACCESSION_NUMBER", how="inner") #13F-NTs dont have INFOTABLE
+            # Left join: a COVERPAGE parsing gap must never silently drop
+            # otherwise-valid INFOTABLE holdings rows. A missing COVERPAGE row
+            # surfaces as NaN manager/confidentiality columns, not a lost row.
+            merged = merged.merge(coverpage, on="ACCESSION_NUMBER", how="left")
+            if checkpoint_path is not None:
+                checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+                merged.to_parquet(checkpoint_path)
+
+        if combined_path is not None:
+            table = pa.Table.from_pandas(merged, preserve_index=False)
+            if writer is None:
+                writer = pq.ParquetWriter(combined_path, table.schema)
+            writer.write_table(table)
+            del merged, table
+        else:
+            frames.append(merged)
+
+    if writer is not None:
+        writer.close()
+
+    if combined_path is not None:
+        panel = pd.read_parquet(combined_path)
+        combined_path.unlink()
+    else:
+        panel = pd.concat(frames, ignore_index=True) #concat to one file
     return panel.drop_duplicates(subset=["ACCESSION_NUMBER", "CUSIP"]).reset_index(drop=True) #remove duplicates
 
 

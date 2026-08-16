@@ -30,6 +30,7 @@ the primary reference.
    - [Single Pipeline Entry Point](#single-pipeline-entry-point-srcrunpy-src_httppy)
    - [Repository Cleanup](#repository-cleanup)
    - [Results Post-Mortem: Isolating the Drawdown, and a Real Attribution Bug](#results-post-mortem-isolating-the-drawdown-and-a-real-attribution-bug)
+   - [`--full` Ingest: Peak-Memory Fix at the Final Combine Step](#--full-ingest-peak-memory-fix-at-the-final-combine-step)
 3. [Defense Quick-Reference Index](#3-defense-quick-reference-index)
 
 ---
@@ -1364,6 +1365,64 @@ this document's own history-preserving convention), and the Defense
 Quick-Reference Index's "Ability to defend every choice" row still cited
 "the six phase-specific reports" removed in the earlier Repository
 Cleanup.
+
+### `--full` Ingest: Peak-Memory Fix at the Final Combine Step
+
+**The report**: `python -m src.ingest --full` was reported to run out of
+memory right at the very end — after all 50+ SEC dataset zips had
+individually downloaded and parsed without incident, the process died
+during what looked like a final "combine everything" step.
+
+**Root cause, found by reading `build_raw_panel` (`src/ingest.py`)
+against that exact symptom**: every dataset's parsed-and-merged
+DataFrame was appended to a plain Python list (`frames`) for the entire
+loop — including datasets loaded from an existing per-dataset checkpoint
+— and only combined once, after the loop, via a single
+`pd.concat(frames, ...)` followed by `.drop_duplicates()`. At `--full`
+scale (~55 datasets spanning 2013-present) this meant: (1) every
+dataset's parsed frame held in memory *simultaneously*, for the whole
+run, even though each one had already been checkpointed to its own
+parquet file on disk; (2) `pd.concat` allocating a second, equally large
+contiguous buffer on top of that list to build the combined frame; (3)
+`.drop_duplicates()` allocating a third. The per-dataset checkpointing
+already in place only ever protected against re-*parsing* work after a
+crash (documented in Phase 1 above) — it did nothing to cap peak memory
+within a single run, and the failure mode matches the report exactly:
+individually-fine parsing, then a blowup only once every dataset had
+already finished.
+
+**Fix**: when `checkpoint_dir` is given (i.e., always in `--full` mode),
+each dataset is now streamed straight into a single combined parquet
+file one dataset at a time via `pyarrow.parquet.ParquetWriter`, instead
+of being accumulated in `frames`. The combine step's peak memory is now
+one dataset's worth, not the sum of all of them. The final panel is read
+back once from that combined file for the one unavoidable global
+`.drop_duplicates()` pass (needed because dedup is inherently
+whole-panel) — still a real allocation, but now a single one instead of
+three stacked on top of each other. The combined temp file is deleted on
+both a fresh start and a successful finish, so a prior crash mid-stream
+can never leave a stale file mistaken for a complete one; per-dataset
+checkpoints (and therefore the already-downloaded/parsed work) are
+untouched by any of this. The small 3-dataset validation-sample path
+(`checkpoint_dir=None`) keeps the original accumulate-then-concat
+behavior since it's trivially small.
+
+**Verified**: a new regression test
+(`test_build_raw_panel_with_checkpoint_dir_streams_each_dataset_to_disk`)
+spies on `ParquetWriter.write_table` (disambiguated by target path from
+pandas' own internal use of the same class for the per-dataset
+checkpoint writes) to confirm each dataset is written to the combined
+file individually — one call per dataset, never a single bulk list-based
+concat — and confirms the temp combine file never survives a successful
+run. All existing `build_raw_panel` tests (checkpoint round-trip, dedup
+across dataset boundaries, 13F-NT drop-out, missing-COVERPAGE survival)
+pass unchanged against the new implementation, including the checkpoint-
+cache-hit path. 164/164 tests pass. Not yet re-verified against a real
+`--full` 55-dataset run in this environment (that run takes significant
+time/bandwidth); the fix was validated via the code path that actually
+produced the reported symptom (the list-accumulation-then-concat
+pattern) plus the full existing `build_raw_panel` test suite, not by
+reproducing the OOM directly.
 
 ---
 

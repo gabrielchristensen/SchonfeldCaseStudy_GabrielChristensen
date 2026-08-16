@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 import pytest
 import requests
 
@@ -614,6 +615,69 @@ def test_build_raw_panel_checkpoint_roundtrip_matches_direct_parse(tmp_path):
 
     pd.testing.assert_frame_equal(direct.reset_index(drop=True), via_checkpoint.reset_index(drop=True))
     pd.testing.assert_frame_equal(direct.reset_index(drop=True), via_checkpoint_reused.reset_index(drop=True))
+
+
+def test_build_raw_panel_with_checkpoint_dir_streams_each_dataset_to_disk(tmp_path, monkeypatch):
+    # Regression test for a real OOM: the old implementation appended every
+    # dataset's parsed frame to a Python list for the whole loop and only
+    # combined them via one final pd.concat -- at --full scale (~55
+    # datasets) that meant holding every dataset simultaneously plus a
+    # second full-size buffer for the concat itself, which is what blew up
+    # memory right at the end of a real run. With checkpoint_dir set, each
+    # dataset must instead be written straight to a combined parquet file
+    # (one dataset's memory footprint at a time) via pq.ParquetWriter,
+    # never accumulated as a growing in-memory list.
+    checkpoint_dir = tmp_path / "parts"
+    combined_path = checkpoint_dir / "_combined_raw.parquet"
+    write_calls = []
+    real_init = pq.ParquetWriter.__init__
+    real_write_table = pq.ParquetWriter.write_table
+
+    def spy_init(self, where, *args, **kwargs):
+        self._test_where = Path(where)
+        return real_init(self, where, *args, **kwargs)
+
+    def spy_write_table(self, table, **kwargs):
+        # to_parquet() (used for per-dataset checkpoints) also routes through
+        # ParquetWriter internally -- only count writes to the combined
+        # streaming file, which is what this test is verifying.
+        if getattr(self, "_test_where", None) == combined_path:
+            write_calls.append(table.num_rows)
+        return real_write_table(self, table, **kwargs)
+
+    monkeypatch.setattr(pq.ParquetWriter, "__init__", spy_init)
+    monkeypatch.setattr(pq.ParquetWriter, "write_table", spy_write_table)
+
+    dest_dir = tmp_path / "raw"
+    dest_dir.mkdir()
+    _write_zip(dest_dir / "ds1_form13f.zip", {
+        "SUBMISSION.tsv": _SAMPLE_SUBMISSION_TSV,
+        "INFOTABLE.tsv": _SAMPLE_INFOTABLE_TSV,
+        "COVERPAGE.tsv": _SAMPLE_COVERPAGE_TSV,
+    })
+    submission_tsv_2 = (
+        "ACCESSION_NUMBER\tFILING_DATE\tSUBMISSIONTYPE\tCIK\tPERIODOFREPORT\n"
+        "B1\t30-JUN-2015\t13F-HR\t2\t31-MAR-2015\n"
+    )
+    infotable_tsv_2 = "ACCESSION_NUMBER\tCUSIP\tVALUE\tSSHPRNAMT\nB1\t037833100\t500\t50\n"
+    _write_zip(dest_dir / "ds2_form13f.zip", {
+        "SUBMISSION.tsv": submission_tsv_2,
+        "INFOTABLE.tsv": infotable_tsv_2,
+        "COVERPAGE.tsv": _SAMPLE_COVERPAGE_TSV.replace("A1", "B1"),
+    })
+
+    panel = build_raw_panel(
+        ["ds1_form13f.zip", "ds2_form13f.zip"], dest_dir=dest_dir, checkpoint_dir=checkpoint_dir,
+    )
+
+    assert sorted(panel["ACCESSION_NUMBER"].tolist()) == ["A1", "B1"]
+    # One write_table call per dataset -- proves each dataset was streamed
+    # to disk individually rather than accumulated in memory for one final
+    # pd.concat.
+    assert write_calls == [1, 1]
+    # The streaming combine buffer must not survive a successful run -- a
+    # leftover file would otherwise risk being mistaken for a complete one.
+    assert not combined_path.exists()
 
 
 def test_build_raw_panel_checkpoint_dir_skips_reparsing_on_rerun(tmp_path, monkeypatch):
