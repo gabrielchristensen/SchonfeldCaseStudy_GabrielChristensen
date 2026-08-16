@@ -2,8 +2,8 @@ import re
 
 import pandas as pd
 
-from src.backtest import COST_BPS_GRID, LAG_DAYS_GRID, PRIMARY_COST_BPS, PRIMARY_LAG_DAYS
-from src.report import _stats_table, build_report
+from src.backtest import COST_BPS_GRID, LAG_DAYS_GRID, PRIMARY_COST_BPS, PRIMARY_LAG_DAYS, performance_stats
+from src.report import _drawdown, _stats_table, build_report
 
 
 def _nav(values):
@@ -100,6 +100,20 @@ def test_build_report_saves_jpg_files_to_charts_subfolder(tmp_path):
     jpgs = list(charts_dir.glob("*.jpg"))
     assert len(jpgs) > 0
     assert any(p.name == "primary_equity_curve.jpg" for p in jpgs)
+    assert any(p.name == "primary_drawdown.jpg" for p in jpgs)
+
+
+def test_drawdown_matches_performance_stats_max_drawdown():
+    # _drawdown() and performance_stats()'s max_drawdown must use the exact
+    # same formula -- the chart and the headline number would silently
+    # diverge otherwise. min() of the full underwater series should equal
+    # the scalar max_drawdown for the same NAV series.
+    nav = _nav([1.0, 1.1, 0.9, 0.95, 0.8, 1.05])
+
+    underwater = _drawdown(nav)
+
+    assert underwater.min() == performance_stats(nav)["max_drawdown"]
+    assert underwater.iloc[0] == 0.0  # first point is always its own running peak
 
 
 def test_build_report_includes_expected_sections_and_stats(tmp_path):

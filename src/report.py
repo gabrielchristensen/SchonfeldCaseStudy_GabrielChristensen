@@ -10,9 +10,10 @@ the report, so individual figures can be reused outside the HTML (e.g. in
 the technical-defense deck) without re-running anything.
 
 Layout mirrors the case-study prompt's own evaluation criteria: a headline
-verdict + KPI row, a primary equity curve against both benchmarks, then the
-lag and cost sensitivity grids the prompt explicitly asks about (rebalancing
-timing / transaction costs) plus the full lag x cost grid those two slices
+verdict + KPI row, a primary equity curve and drawdown (underwater) profile
+against both benchmarks, then the lag and cost sensitivity grids the prompt
+explicitly asks about (rebalancing timing / transaction costs) plus the full
+lag x cost grid those two slices
 are cut from, then turnover and universe-coverage as supporting
 diagnostics, then regime/attribution (per-era performance, benchmark
 correlation, top-contributor tickers -- the same analysis
@@ -151,6 +152,14 @@ def _fig_to_data_uri(fig, *, name: str, charts_dir: Path | None) -> str:
         (charts_dir / f"{name}.jpg").write_bytes(raw)
     encoded = base64.b64encode(raw).decode("ascii")
     return f"data:image/jpeg;base64,{encoded}"
+
+
+def _drawdown(nav: pd.Series) -> pd.Series:
+    """Underwater series: fractional decline from the running peak. Same
+    formula src.backtest.performance_stats() uses for max_drawdown (just
+    the full series instead of its min), so the chart and the headline
+    number can never silently diverge."""
+    return nav / nav.cummax() - 1
 
 
 def _line_chart(
@@ -412,6 +421,22 @@ def build_report(
             emphasize=f"Long-short spread ({PRIMARY_LAG_DAYS}d lag, {PRIMARY_COST_BPS}bps)",
         )
         add(f'<div class="chart-card"><img src="{chart}" alt="primary equity curve"></div>')
+
+        drawdown_chart = _line_chart(
+            {
+                f"Long-short spread ({PRIMARY_LAG_DAYS}d lag, {PRIMARY_COST_BPS}bps)": _drawdown(primary["spread_nav"]),
+                "Internal equal-weight universe": _drawdown(primary["universe_nav"]),
+                BENCHMARK_TICKER: _drawdown(primary["spy_nav"]),
+            },
+            title="Primary backtest: drawdown (underwater) vs. benchmarks",
+            ylabel="Drawdown from running peak",
+            name="primary_drawdown",
+            charts_dir=charts_dir,
+            colors={"Internal equal-weight universe": COLOR_SLOT2, BENCHMARK_TICKER: COLOR_SLOT3},
+            emphasize=f"Long-short spread ({PRIMARY_LAG_DAYS}d lag, {PRIMARY_COST_BPS}bps)",
+        )
+        add(f'<div class="chart-card"><img src="{drawdown_chart}" alt="primary drawdown"></div>')
+
         stats_rows = [
             {"label": "Long-short spread", **spread_stats},
             {"label": "Internal equal-weight universe", **universe_stats},

@@ -855,6 +855,33 @@ the user judged it not worth a dedicated section) -- `ic_series` remains
 in `results` and still feeds `detail.subperiod_stats`'s regime-level IC,
 only the report's separate top-level section was removed.
 
+**Drawdown chart added, later session (`docs/memo.md` gold-standard rewrite).**
+While trimming `docs/memo.md` to the prompt's 3-5 page limit, the new memo
+called for a real underwater/drawdown chart alongside the equity curve
+(previously the report only plotted NAV level, never the running-peak
+decline — a reader had to infer drawdown depth from the equity-curve chart
+by eye). Added `_drawdown(nav)` (`nav / nav.cummax() - 1`) as its own
+one-line helper specifically so the chart and `performance_stats()`'s
+`max_drawdown` scalar share the exact same formula and can never silently
+diverge; a new test (`test_drawdown_matches_performance_stats_max_drawdown`)
+asserts `_drawdown(nav).min() == performance_stats(nav)["max_drawdown"]`
+directly. The chart itself (`primary_drawdown.jpg`, "Primary backtest:
+drawdown (underwater) vs. benchmarks") sits in the Primary result section
+immediately after the equity curve, using the same emphasis/color pattern
+(spread in accent blue, internal universe orange, SPY aqua). **Verified for
+real**: regenerated `results/backtest_report.html` + `results/charts/` from
+the committed `backtest_results.pkl`/`prices.parquet` (no network, no
+backtest re-run) and visually confirmed the chart's spread trough lines up
+with the disclosed -55.4% max drawdown figure. `docs/memo.md` embeds this
+real chart directly (`../results/charts/primary_drawdown.jpg`), replacing
+one of the three `![INSERT CHART: ...]` placeholders the memo rewrite
+initially shipped with. The equity-curve placeholder was swapped the same
+way, straight to the already-existing `../results/charts/primary_equity_curve.jpg`
+(no new chart code needed there). Only the per-decile-returns placeholder
+remains — it needs new analysis code (`assign_deciles` only tracks the
+top/bottom decile as a tradable portfolio today, not all 10) that wasn't
+built this pass. 148/148 tests pass.
+
 ### Single Pipeline Entry Point (`src/run.py`, `src/_http.py`)
 
 Two separate asks: a progress meter for `universe.py`, and an assessment
