@@ -1471,10 +1471,45 @@ now genuinely different code from the small-sample path.
 `test_build_raw_panel_with_checkpoint_dir_leaves_no_temp_files_behind`
 confirms both `_combined_raw.parquet` and the new
 `_combined_raw_deduped.parquet` are cleaned up after a successful run.
-168/168 tests pass. Same caveat as above still applies: not yet verified
-against a real `--full` 55-dataset run in this environment — the
-streaming design targets the specific 2x-allocation risk identified by
-re-reading the code after the first fix, not a re-observed crash.
+Same caveat as above still applies: not yet verified against a real
+`--full` 55-dataset run in this environment — the streaming design
+targets the specific 2x-allocation risk identified by re-reading the code
+after the first fix, not a re-observed crash.
+
+**Bias check, specifically look-ahead via amendments**: raised before
+pushing, since this fix rewrote *how* the raw-panel dedup happens and
+amendment handling is exactly the kind of thing a subtle reordering bug
+could silently break. Two things rule it out:
+
+1. The dedup key here is `(ACCESSION_NUMBER, CUSIP)`, guarding only
+   against the same physical filing being scraped from two overlapping
+   SEC dataset zips at the 2024 naming-scheme boundary. An amendment
+   (`13F-HR/A`) always gets its own distinct `ACCESSION_NUMBER` from SEC
+   — it is never a dedup match against the original filing it amends, so
+   this dedup was never in the business of resolving amendments and still
+   isn't. Row order also can't matter here: `_dedupe_combined_parquet`
+   streams row groups back in the exact order `ParquetWriter` wrote them
+   (dataset processing order, unchanged from before), so "first
+   occurrence" resolves identically to the old `pd.concat`-then-
+   `drop_duplicates` path.
+2. Amendment resolution itself lives entirely in `pit.py`
+   (`_winning_accessions`), which is untouched by this change and doesn't
+   depend on `build_raw_panel`'s row order at all — it explicitly
+   re-sorts by `["CIK", "FILING_DATE", "ACCESSION_NUMBER"]` and takes
+   `.last()` per CIK before ever looking at accession identity.
+
+Verified directly, not just argued: a new test,
+`test_build_raw_panel_streaming_dedup_preserves_amendments_for_point_in_time_use`,
+builds two dataset zips where ds2 contains both a verbatim duplicate of
+ds1's filing (the real dedup target) and a genuine later amendment for
+the same CIK/period, runs the amendment scenario through the new
+streaming `build_raw_panel` path, and feeds the result straight into
+`pit.as_of_snapshot`: the duplicate collapses to one row, the amendment
+survives as a distinct row, it's invisible before its own `FILING_DATE`
+(`as_of_date="2020-05-15"` still returns the pre-amendment value), and it
+correctly supersedes the original once its `FILING_DATE` has passed
+(`as_of_date="2020-08-01"` returns the amended value). 169/169 tests
+pass.
 
 ---
 

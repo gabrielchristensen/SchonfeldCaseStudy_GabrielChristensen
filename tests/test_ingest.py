@@ -703,6 +703,65 @@ def test_build_raw_panel_with_checkpoint_dir_dedups_across_dataset_boundary(tmp_
     assert len(panel) == 1
 
 
+def test_build_raw_panel_streaming_dedup_preserves_amendments_for_point_in_time_use(tmp_path):
+    # Guards against a specific bias risk in the streaming-dedup rewrite:
+    # the raw-panel dedup key is (ACCESSION_NUMBER, CUSIP), and an amendment
+    # always gets its own distinct ACCESSION_NUMBER -- so it must never be
+    # collapsed away by this dedup, only a genuine same-accession duplicate
+    # (the same filing appearing in two overlapping SEC dataset zips) should
+    # be removed. ds1 holds the original filing (A1); ds2 holds both a
+    # verbatim duplicate of A1 (the boundary-overlap artifact the dedup
+    # exists for) and a later amendment (A2, a distinct accession, later
+    # FILING_DATE) for the same CIK/period. Then feeds the result straight
+    # into pit.py's as_of_snapshot to confirm the amendment is neither lost
+    # nor visible before its own FILING_DATE (no look-ahead).
+    submission_tsv_1 = (
+        "ACCESSION_NUMBER\tFILING_DATE\tSUBMISSIONTYPE\tCIK\tPERIODOFREPORT\n"
+        "A1\t10-MAY-2020\t13F-HR\t1\t31-MAR-2020\n"
+    )
+    infotable_tsv_1 = "ACCESSION_NUMBER\tCUSIP\tVALUE\tSSHPRNAMT\nA1\t037833100\t100\t10\n"
+
+    submission_tsv_2 = (
+        "ACCESSION_NUMBER\tFILING_DATE\tSUBMISSIONTYPE\tCIK\tPERIODOFREPORT\n"
+        "A1\t10-MAY-2020\t13F-HR\t1\t31-MAR-2020\n"
+        "A2\t01-AUG-2020\t13F-HR/A\t1\t31-MAR-2020\n"
+    )
+    infotable_tsv_2 = (
+        "ACCESSION_NUMBER\tCUSIP\tVALUE\tSSHPRNAMT\n"
+        "A1\t037833100\t100\t10\n"
+        "A2\t037833100\t200\t20\n"
+    )
+    coverpage_tsv_2 = (
+        "ACCESSION_NUMBER\tFILINGMANAGER_NAME\tCONFDENIEDEXPIRED\tDATEDENIEDEXPIRED\t"
+        "DATEREPORTED\tREASONFORNONCONFIDENTIALITY\n"
+        "A1\tSample Capital LLC\t\t\t\t\n"
+        "A2\tSample Capital LLC\t\t\t\t\n"
+    )
+
+    dest_dir = tmp_path / "raw"
+    dest_dir.mkdir()
+    _write_zip(dest_dir / "ds1_form13f.zip", {
+        "SUBMISSION.tsv": submission_tsv_1, "INFOTABLE.tsv": infotable_tsv_1, "COVERPAGE.tsv": _SAMPLE_COVERPAGE_TSV,
+    })
+    _write_zip(dest_dir / "ds2_form13f.zip", {
+        "SUBMISSION.tsv": submission_tsv_2, "INFOTABLE.tsv": infotable_tsv_2, "COVERPAGE.tsv": coverpage_tsv_2,
+    })
+
+    panel = build_raw_panel(
+        ["ds1_form13f.zip", "ds2_form13f.zip"], dest_dir=dest_dir, checkpoint_dir=tmp_path / "parts",
+    )
+
+    # The cross-dataset duplicate of A1 is collapsed to one row; the
+    # amendment A2 -- a genuinely distinct accession -- survives untouched.
+    assert sorted(panel["ACCESSION_NUMBER"].tolist()) == ["A1", "A2"]
+
+    from src.pit import as_of_snapshot
+    snap_before = as_of_snapshot(panel, "2020-03-31", as_of_date="2020-05-15")
+    assert snap_before["SSHPRNAMT"].tolist() == [10]  # amendment not filed yet -- no look-ahead
+    snap_after = as_of_snapshot(panel, "2020-03-31", as_of_date="2020-08-01")
+    assert snap_after["SSHPRNAMT"].tolist() == [20]  # amendment now supersedes the original
+
+
 def test_build_raw_panel_with_checkpoint_dir_leaves_no_temp_files_behind(tmp_path):
     dest_dir = tmp_path / "raw"
     dest_dir.mkdir()
